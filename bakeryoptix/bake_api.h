@@ -31,6 +31,7 @@
 #include <vector>
 #include <array>
 #include <memory>
+#include <utils/std_ext.h>
 
 namespace bake
 {
@@ -57,8 +58,63 @@ namespace bake
 		std::string name;
 		NodeTransformation matrix = NodeTransformation::identity();
 		NodeBase* parent{};
+		bool active = true;
+		bool active_local = true;
 		virtual ~NodeBase() = default;
 		virtual void update_matrix() = 0;
+	};
+
+
+	struct MaterialProperty
+	{
+		std::string name;
+		float v1{};
+		float v2[2]{};
+		float v3[3]{};
+		float v4[4]{};
+	};
+
+	struct MaterialResource
+	{
+		std::string name;
+		uint32_t slot{};
+		std::string texture;
+	};
+
+	enum class MaterialBlendMode : uint8_t
+	{
+		opaque = 0,
+		blend = 1,
+		coverage = 2
+	};
+
+	struct Material
+	{
+		std::string name;
+		std::string shader;
+		MaterialBlendMode blend{};
+		bool alpha_tested{};
+		uint32_t depth_mode{};
+		std::vector<MaterialProperty> vars;
+		std::vector<MaterialResource> resources;
+
+		const MaterialProperty* get_var_or_null(const std::string& cs)
+		{
+			for (const auto& v : vars)
+			{
+				if (v.name == name) return &v;
+			}
+			return nullptr;
+		}
+
+		const MaterialResource* get_resource_or_null(const std::string& cs)
+		{
+			for (const auto& v : resources)
+			{
+				if (v.name == name) return &v;
+			}
+			return nullptr;
+		}
 	};
 
 	struct Mesh : NodeBase
@@ -72,11 +128,16 @@ namespace bake
 		unsigned int* tri_vertex_indices;
 		bool cast_shadows;
 		bool receive_shadows;
+		bool visible;
+		std::shared_ptr<Material> material;
 
 		void update_matrix() override
 		{
 			matrix = parent->matrix;
+			active = parent->active && active_local;
 		}
+
+		bool matches(const std::string& query);
 	};
 
 	struct Node : NodeBase
@@ -85,6 +146,45 @@ namespace bake
 			: matrix_local(matrix), matrix_local_orig(matrix)
 		{
 			this->name = name;
+		}
+
+		std::shared_ptr<Mesh> find_mesh(const std::string& name)
+		{
+			for (const auto& c : children)
+			{
+				auto n = std::dynamic_pointer_cast<Node>(c);
+				if (n)
+				{
+					auto found = n->find_mesh(name);
+					if (found)
+					{
+						return found;
+					}
+				}
+				else
+				{
+					auto m = std::dynamic_pointer_cast<Mesh>(c);
+					if (m && m->matches(name))
+					{
+						return m;
+					}
+				}
+			}
+			return nullptr;
+		}
+
+		std::vector<std::shared_ptr<Mesh>> find_meshes(const std::vector<std::string>& names)
+		{
+			std::vector<std::shared_ptr<Mesh>> result;
+			for (const auto& name : names)
+			{
+				auto mesh = find_mesh(name);
+				if (mesh)
+				{
+					result.push_back(mesh);
+				}
+			}
+			return result;
 		}
 
 		std::shared_ptr<Node> find_node(const std::string& name)
@@ -99,9 +199,49 @@ namespace bake
 					{
 						return found;
 					}
+
+					// If Mesh matches, returns its parent
+					for (const auto& nc : n->children)
+					{
+						auto m = std::dynamic_pointer_cast<Mesh>(nc);
+						if (m && m->matches(name))
+						{
+							return n;
+						}
+					}
 				}
 			}
 			return nullptr;
+		}
+
+		std::vector<std::shared_ptr<Node>> find_nodes(const std::vector<std::string>& names)
+		{
+			std::vector<std::shared_ptr<Node>> result;
+			for (const auto& name : names)
+			{
+				auto node = find_node(name);
+				if (node)
+				{
+					result.push_back(node);
+				}
+			}
+			return result;
+		}
+
+		bool set_active(const std::vector<std::string>& names, const bool value)
+		{
+			auto any = false;
+			for (const auto& n : find_nodes(names))
+			{
+				n->active_local = value;
+				any = true;
+			}
+			for (const auto& n : find_meshes(names))
+			{
+				n->active_local = value;
+				any = true;
+			}
+			return any;
 		}
 
 		void add_child(const std::shared_ptr<NodeBase>& node)

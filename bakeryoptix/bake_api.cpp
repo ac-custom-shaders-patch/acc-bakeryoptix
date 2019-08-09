@@ -32,6 +32,7 @@
 #include <bake_api.h>
 #include <bake_filter.h>
 #include <bake_filter_least_squares.h>
+#include <iostream>
 
 using namespace optix;
 
@@ -67,9 +68,78 @@ bake::NodeTransformation bake::NodeTransformation::identity()
 	return to_transformation(Matrix4x4::identity());
 }
 
+static bool test_mesh_property(const bake::Mesh* mesh, const std::string& query, bool& valid_property)
+{
+	const auto sep = query.find_first_of(':');
+	if (sep == std::string::npos)
+	{
+		valid_property = false;
+		return false;
+	}
+
+	valid_property = true;
+	switch (sep)
+	{
+	case 6:
+		{
+			const auto p = query.substr(0, sep);
+			if (p == "shader")
+			{
+				return mesh->material && std_ext::match(query.substr(sep + 1), mesh->material->shader);
+			}
+			break;
+		}
+	case 7:
+		{
+			const auto p = query.substr(0, sep);
+			if (p == "texture")
+			{
+				if (!mesh->material) return false;
+				for (const auto& t : mesh->material->resources)
+				{
+					if (std_ext::match(query.substr(sep + 1), t.texture)) return true;
+				}
+			}
+			break;
+		}
+	case 8:
+		{
+			const auto p = query.substr(0, sep);
+			if (p == "material")
+			{
+				return mesh->material && std_ext::match(query.substr(sep + 1), mesh->material->name);
+			}
+			break;
+		}
+	case 16:
+		{
+			const auto p = query.substr(0, sep);
+			if (p == "materialProperty")
+			{
+				return mesh->material && mesh->material->get_var_or_null(query.substr(sep + 1)) != nullptr;
+			}
+			if (p == "materialResource")
+			{
+				return mesh->material && mesh->material->get_resource_or_null(query.substr(sep + 1)) != nullptr;
+			}
+			break;
+		}
+	default: break;
+	}
+	valid_property = false;
+	return false;
+}
+
+bool bake::Mesh::matches(const std::string& query)
+{
+	bool valid_property;
+	return std_ext::match(query, name) || test_mesh_property(this, query, valid_property);
+}
+
 void bake::Node::update_matrix()
 {
 	matrix = parent ? parent->matrix * matrix_local : matrix_local;
+	active = parent ? parent->active && active_local : active_local;
 	for (const auto& c : children)
 	{
 		c->update_matrix();
@@ -111,7 +181,7 @@ void bake::Animation::apply(float progress) const
 	}
 }
 
-bake::Scene::Scene(const std::shared_ptr<Node>& root) : Scene(std::vector<std::shared_ptr<Node>>{root}) {}
+bake::Scene::Scene(const std::shared_ptr<Node>& root) : Scene(root ? std::vector<std::shared_ptr<Node>>{root} : std::vector<std::shared_ptr<Node>>{}) {}
 
 bake::Scene::Scene(const std::vector<std::shared_ptr<Node>>& nodes)
 {
@@ -120,10 +190,11 @@ bake::Scene::Scene(const std::vector<std::shared_ptr<Node>>& nodes)
 		n->update_matrix();
 		for (const auto& m : n->get_meshes())
 		{
+			if (!m->visible || !m->active) continue;
 			if (m->receive_shadows) receivers.push_back(m);
 			if (m->cast_shadows) blockers.push_back(m);
 
-			auto x = to_matrix(m->matrix);
+			const auto& x = to_matrix(m->matrix);
 			float4 f4;
 			f4.w = 1.f;
 

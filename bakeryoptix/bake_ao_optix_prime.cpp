@@ -118,9 +118,10 @@ void bake::ao_optix_prime(
 	const float scene_maxdistance_scale,
 	const float* bbox_min,
 	const float* bbox_max,
-	float* ao_values)
+	float* ao_values,
+	bool use_cuda)
 {
-	auto ctx = Context::create(RTP_CONTEXT_TYPE_CUDA);
+	auto ctx = Context::create(use_cuda ? RTP_CONTEXT_TYPE_CUDA : RTP_CONTEXT_TYPE_CPU);
 
 	std::vector<Model> models;
 	std::vector<RTPmodel> prime_instances;

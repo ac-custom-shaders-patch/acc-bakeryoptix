@@ -2,6 +2,7 @@
 #include <map>
 #include <vector>
 #include <memory>
+#include <utils/ini_file.h>
 
 namespace utils {
 	class path;
@@ -16,9 +17,11 @@ typedef std::vector<float> baked_data_mesh;
 struct save_params
 {
 	float averaging_threshold;
+	float averaging_cos_threshold;
 	float brightness;
 	float gamma;
 	float opacity;
+	utils::ini_file extra_config;
 };
 
 struct baked_data
@@ -28,5 +31,7 @@ struct baked_data
 	void replace(const baked_data& b);
 	void max(const baked_data& b, float mult_b = 1.f);
 	void average(const baked_data& b, float mult_b, float mult_base);
+	void extend(const baked_data& b);
+	void fill(const std::shared_ptr<bake::Mesh>& mesh, float x);
 };
 

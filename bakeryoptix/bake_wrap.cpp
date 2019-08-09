@@ -123,12 +123,18 @@ void destroy_ao_samples(bake::AOSamples& ao_samples)
 	ao_samples.num_samples = 0;
 }
 
-baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene, const std::vector<std::shared_ptr<bake::Mesh>> blockers, 
+baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene, const std::vector<std::shared_ptr<bake::Mesh>> blockers,
 	const bake_params& config, bool verbose)
 {
 	#undef PERF
 	#define PERF(NAME)\
 		perf_moment PERF_UNIQUE(NAME, verbose);
+
+	if (scene->receivers.empty())
+	{
+		// std::cerr << "\n[ WARNING: No shadow receivers. ]\n";
+		return baked_data{};
+	}
 
 	// Generate AO samples
 	std::vector<size_t> num_samples_per_instance(scene->receivers.size());
@@ -149,6 +155,7 @@ baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene, cons
 	std::vector<float> ao_values(total_samples);
 	{
 		PERF("\tComputing AO");
+
 		std::fill(ao_values.begin(), ao_values.end(), 0.f);
 		std::vector<bake::Mesh*> blocker_meshes;
 		for (const auto& m : blockers)
@@ -169,7 +176,7 @@ baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene, cons
 
 		ao_optix_prime(blocker_meshes, ao_samples,
 			config.num_rays, config.scene_offset_scale, config.scene_maxdistance_scale,
-			scene->bbox_min, scene->bbox_max, &ao_values[0]);
+			scene->bbox_min, scene->bbox_max, &ao_values[0], config.use_cuda);
 	}
 
 	// Mapping AO to vertices

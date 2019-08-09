@@ -22,6 +22,7 @@ struct bake_params {
 
 	bake::VertexFilterMode filter_mode;
 	float regularization_weight;
+	bool use_cuda;
 };
 
 struct bake_wrap final

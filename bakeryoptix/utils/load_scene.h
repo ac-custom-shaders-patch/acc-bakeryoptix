@@ -9,9 +9,10 @@ namespace utils {
 
 struct load_params
 {
-	float normals_bias;
+	float normals_bias{};
 	std::vector<std::string> exclude_patch;
 	std::vector<std::string> exclude_blockers;
+	bool exclude_blockers_alpha_test{};
 };
 
 std::shared_ptr<bake::Node> load_scene(const utils::path& filename, const load_params& params);

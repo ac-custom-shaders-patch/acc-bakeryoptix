@@ -10,6 +10,7 @@
 #include <utils/filesystem.h>
 #include <utils/ini_file.h>
 #include <bake_api.h>
+#include <iomanip>
 
 template <typename T>
 void add_bytes(std::basic_string<uint8_t>& d, const T& value)
@@ -84,8 +85,8 @@ void baked_data::save(const utils::path& destination, const save_params& params)
 				{
 					const auto k = vertices_conv[k2].index;
 					const auto& kn = *(float3*)&m->normals[k * 3];
-					const auto nd = optix::dot(jn, kn);
-					if (nd < 0.3f) continue;
+					const auto nd = dot(jn, kn);
+					if (nd < params.averaging_cos_threshold) continue;
 
 					const auto& kp = *(float3*)&m->vertices[k * 3];
 					const auto dp = jp - kp;
@@ -110,17 +111,20 @@ void baked_data::save(const utils::path& destination, const save_params& params)
 			}
 		}
 
+		// std::cout << "name=" << m->name << ": ";
 		for (auto j = 0U; j < m->num_vertices; j++)
 		{
+			// std::cout << std::setprecision(2) << ao[j] << ", ";
 			add_bytes(data, half_float::half(ao[j]));
 		}
+		// std::cout << "\n";
 	}
 
 	remove(destination.string().c_str());
 	mz_zip_add_mem_to_archive_file_in_place(destination.string().c_str(), "Patch.data",
 		data.c_str(), data.size(), nullptr, 0, 0);
 
-	utils::ini_file config;
+	auto config = params.extra_config;
 	config.set("LIGHTING", "BRIGHTNESS", params.brightness);
 	config.set("LIGHTING", "GAMMA", params.gamma);
 	config.set("LIGHTING", "OPACITY", params.opacity);
@@ -134,7 +138,7 @@ baked_data_mesh merge_mesh_data(const baked_data_mesh& b, const baked_data_mesh&
 	baked_data_mesh result;
 	if (b.size() != base.size())
 	{
-		std::cerr << "Sizes do not match.";
+		std::cerr << "\n[ ERROR: Sizes do not match. ]\n";
 		exit(1);
 	}
 	result.resize(b.size());
@@ -150,7 +154,7 @@ baked_data_mesh average_mesh_data(const baked_data_mesh& b, const baked_data_mes
 	baked_data_mesh result;
 	if (b.size() != base.size())
 	{
-		std::cerr << "Sizes do not match.";
+		std::cerr << "\n[ ERROR: Sizes do not match. ]\n";
 		exit(1);
 	}
 	result.resize(b.size());
@@ -188,5 +192,28 @@ void baked_data::average(const baked_data& b, float mult_b, float mult_base)
 		entries[p.first] = f == entries.end()
 				? p.second
 				: average_mesh_data(p.second, f->second, mult_b, mult_base);
+	}
+}
+
+void baked_data::extend(const baked_data& b)
+{
+	for (const auto& p : b.entries)
+	{
+		auto f = entries.find(p.first);
+		if (f == entries.end())
+		{
+			entries[p.first] = p.second;
+		}
+	}
+}
+
+void baked_data::fill(const std::shared_ptr<bake::Mesh>& mesh, float x)
+{
+	if (!mesh) return;
+	auto& entry = entries[mesh];
+	entry.resize(mesh->num_vertices);
+	for (auto j = 0U; j < mesh->num_vertices; j++)
+	{
+		entry[j] = x;
 	}
 }

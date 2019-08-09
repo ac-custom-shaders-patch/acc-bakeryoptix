@@ -38,5 +38,6 @@ namespace bake
 		const float scene_maxdistance_scale,
 		const float* bbox_min,
 		const float* bbox_max,
-		float* ao_values);
+		float* ao_values,
+		bool use_cuda);
 }

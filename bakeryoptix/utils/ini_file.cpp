@@ -44,7 +44,7 @@ namespace utils
 		return index >= 0 && matches_from(s, index, "data:image/png;base64,");
 	}
 
-	static void parse_ini_finish(section* cs, const std::string& cs_key, const std::string& data, const int non_space, std::string& key, 
+	static void parse_ini_finish(section* cs, const std::string& cs_key, const std::string& data, const int non_space, std::string& key,
 		int& started, int& end_at)
 	{
 		if (!key.empty() && cs)
@@ -247,16 +247,157 @@ namespace utils
 			c[i.first] = i.second;
 		}*/
 	}
-	
+
+	static bool is_dataacd_file(const path& path, utils::path& acd_path, std::string& car_id)
+	{
+		const auto parent = path.parent_path();
+		if (parent.filename() != "data") return false;
+
+		const auto car_dir = parent.parent_path();
+		acd_path = car_dir / "data.acd";
+		if (!exists(acd_path)) return false;
+
+		car_id = car_dir.filename().string();
+		return true;
+	}
+
+	static std::string create_key_byte(const int v)
+	{
+		return std::to_string((v % 256 + 256) % 256);
+	}
+
+	static std::string create_key(const std::string& car_id)
+	{
+		auto input = std::string(car_id);
+		const auto input_size = (int)input.size();
+		std::transform(input.begin(), input.end(), input.begin(), tolower);
+
+		int values[8]{
+			0, 0, 0, 0x1683, 0x42, 0x65, 0xab, 0xab
+		};
+
+		for (auto i = 0; i < input_size; i++)
+		{
+			values[0] += input[i];
+		}
+
+		for (auto i = 0; i < input_size - 1; i += 2)
+		{
+			values[1] = values[1] * input[i] - input[i + 1];
+		}
+
+		for (auto i = 1; i < input_size - 3; i += 3)
+		{
+			values[2] *= input[i];
+			values[2] /= input[i + 1] + 0x1b;
+			values[2] += -0x1b - input[i - 1];
+		}
+
+		for (auto i = 1; i < input_size; i++)
+		{
+			values[3] -= input[i];
+		}
+
+		for (auto i = 1; i < input_size - 4; i += 4)
+		{
+			values[4] = (input[i] + 0xf) * values[4] * (input[i - 1] + 0xf) + 0x16;
+		}
+
+		for (auto i = 0; i < input_size - 2; i += 2)
+		{
+			values[5] -= input[i];
+		}
+
+		for (auto i = 0; i < input_size - 2; i += 2)
+		{
+			values[6] %= input[i];
+		}
+
+		for (auto i = 0; i < input_size - 1; i++)
+		{
+			values[7] = values[7] / input[i] + input[i + 1];
+		}
+
+		std::string result;
+		for (auto v : values)
+		{
+			result += result.empty() ? create_key_byte(v) : "-" + create_key_byte(v);
+		}
+		return result;
+	}
+
+	static std::string read_string(std::ifstream& stream)
+	{
+		int32_t size;
+		stream.read((char*)&size, sizeof size);
+		if (!stream || size > 2000000)
+		{
+			// 2 MB limit for data files
+			return "";
+		}
+
+		std::string result(size, '\0');
+		stream.read(&result[0], size);
+		return result;
+	}
+
+	static std::string load_dataacd_sections(const path& path, const utils::path& acd_path, const std::string& car_id)
+	{
+		std::ifstream file(acd_path.wstring(), std::ios::in | std::ios::binary);
+		if (!file.is_open()) return std::string();
+
+		int32_t first_int;
+		file.read((char*)&first_int, sizeof first_int);
+		file.seekg(first_int == -1111 ? 8 : 0, std::ios_base::beg);
+
+		const auto filename = path.filename().string();
+		while (!file.eof())
+		{
+			const auto section = read_string(file);
+			if (section.empty()) break;
+
+			int32_t section_size;
+			file.read((char*)&section_size, sizeof section_size);
+			section_size *= 4;
+
+			if (section == filename)
+			{
+				const auto bytes = new char[section_size];
+				file.read(bytes, section_size);
+
+				std::string decrypted(section_size / 4, '\0');
+				const auto key = create_key(car_id);
+				const auto key_end = key.size() - 1;
+				size_t key_pos = 0;
+
+				for (int i = 0, size = section_size / 4; i < size; i++)
+				{
+					const int value = (int)bytes[i * 4] - (int)key[key_pos];
+					decrypted[i] = (char)(value < 0 ? value + 256 : value);
+					key_pos = key_pos == key_end ? 0 : key_pos + 1;
+				}
+
+				delete[] bytes;
+				return decrypted;
+			}
+
+			file.seekg(section_size, std::ios_base::cur);
+		}
+
+		return std::string();
+	}
+
 	std::string read_ac_file(const path& filename, bool* is_encrypted)
 	{
 		std::string result;
-
 		std::string car_id;
 		path acd_path;
-		if (is_encrypted) *is_encrypted = false;
-
-		if (!exists(filename))
+		if (is_dataacd_file(filename, acd_path, car_id))
+		{
+			if (is_encrypted != nullptr) *is_encrypted = true;
+			result = load_dataacd_sections(filename, acd_path, car_id);
+		}
+		else if (!exists(filename))
 		{
 			result = std::string();
 		}

@@ -14,59 +14,16 @@
 
 using namespace optix;
 
-struct kn5material_property
-{
-	std::string name;
-	float v1{};
-	float2 v2{};
-	float3 v3{};
-	float4 v4{};
-};
-
-struct kn5material_resource
-{
-	std::string name;
-	uint32_t slot{};
-	std::string texture;
-};
-
-enum class kn5material_blend : byte
-{
-	opaque = 0,
-	blend = 1,
-	coverage = 2
-};
-
-struct kn5material
-{
-	std::string name;
-	std::string shader;
-	kn5material_blend blend{};
-	bool alpha_tested{};
-	uint32_t depth_mode{};
-	std::vector<kn5material_property> properties;
-	std::vector<kn5material_resource> resources;
-};
-
 struct load_data
 {
-	std::vector<kn5material> materials;
+	std::vector<std::shared_ptr<bake::Material>> materials;
 };
 
-static std::shared_ptr<bake::Mesh> load_kn5__read_mesh(load_data& target, const load_params& params, utils::binary_reader& reader, bool skip)
+static std::shared_ptr<bake::Mesh> load_kn5__read_mesh(load_data& target, const load_params& params, utils::binary_reader& reader)
 {
 	const auto cast_shadows = reader.read_bool();
 	const auto is_visible = reader.read_bool();
 	const auto is_transparent = reader.read_bool();
-	if (!is_visible) skip = true;
-
-	if (skip)
-	{
-		const auto vs = sizeof(float3) + sizeof(float3) + sizeof(float2) + sizeof(float3);
-		reader.skip(reader.read_uint() * vs);
-		reader.skip(reader.read_uint() * sizeof(uint16_t) + 33);
-		return nullptr;
-	}
 
 	auto mesh = std::make_shared<bake::Mesh>();
 	mesh->cast_shadows = cast_shadows && !is_transparent;
@@ -101,12 +58,15 @@ static std::shared_ptr<bake::Mesh> load_kn5__read_mesh(load_data& target, const 
 	const auto lod_out = reader.read_float();
 	reader.skip(sizeof(float3) + 4);
 
-	if (material.alpha_tested || material.blend != kn5material_blend::opaque)
+	if (params.exclude_blockers_alpha_test && (material->alpha_tested || material->blend == bake::MaterialBlendMode::coverage)
+		|| material->blend == bake::MaterialBlendMode::blend)
 	{
 		mesh->cast_shadows = false;
 	}
 
 	mesh->receive_shadows = true;
+	mesh->visible = is_visible;
+	mesh->material = material;
 
 	const auto is_renderable = reader.read_bool();
 	if (!is_renderable || lod_in > 0.f)
@@ -117,12 +77,13 @@ static std::shared_ptr<bake::Mesh> load_kn5__read_mesh(load_data& target, const 
 	return mesh;
 }
 
-static std::shared_ptr<bake::NodeBase> load_kn5__read_node(load_data& target, const load_params& params, utils::binary_reader& reader, bool skip)
+static std::shared_ptr<bake::NodeBase> load_kn5__read_node(load_data& target, const load_params& params, utils::binary_reader& reader)
 {
 	const auto node_class = reader.read_uint();
 	const auto name = reader.read_string();
 	const auto node_children = reader.read_uint();
-	skip = !reader.read_bool() || skip; // is node active
+	const auto active = reader.read_bool();
+	// skip = !reader.read_bool() || skip; // is node active
 
 	switch (node_class)
 	{
@@ -131,8 +92,9 @@ static std::shared_ptr<bake::NodeBase> load_kn5__read_node(load_data& target, co
 			auto result = std::make_shared<bake::Node>(name, bake::NodeTransformation::identity());
 			for (auto i = node_children; i > 0; i--)
 			{
-				result->add_child(load_kn5__read_node(target, params, reader, skip));
+				result->add_child(load_kn5__read_node(target, params, reader));
 			}
+			result->active_local = active;
 			return result;
 		}
 
@@ -141,34 +103,36 @@ static std::shared_ptr<bake::NodeBase> load_kn5__read_node(load_data& target, co
 			auto result = std::make_shared<bake::Node>(name, reader.read_f4x4().transpose());
 			for (auto i = node_children; i > 0; i--)
 			{
-				result->add_child(load_kn5__read_node(target, params, reader, skip));
+				result->add_child(load_kn5__read_node(target, params, reader));
 			}
+			result->active_local = active;
 			return result;
 		}
 
 	case 2:
 		{
-			auto result = load_kn5__read_mesh(target, params, reader, skip);
+			auto result = load_kn5__read_mesh(target, params, reader);
 			if (result)
 			{
 				result->name = name;
+				result->active_local = active;
 				for (const auto& e : params.exclude_blockers)
 				{
-					if (std_ext::match(e, name))
+					if (result->matches(e))
 					{
+						// std::cout << "DOES NOT CAST SHADOWS: " << result->name << "\n";
 						result->cast_shadows = false;
 						break;
 					}
-	
 				}
 				for (const auto& e : params.exclude_patch)
 				{
-					if (std_ext::match(e, name))
+					if (result->matches(e))
 					{
+						// std::cout << "DOES NOT RECEIVE SHADOWS: " << result->name << "\n";
 						result->receive_shadows = false;
 						break;
 					}
-	
 				}
 			}
 			return result;
@@ -204,7 +168,7 @@ std::shared_ptr<bake::NodeBase> load_kn5_file(load_data& target, const utils::pa
 	if (!reader.match("sc6969")) return nullptr;
 
 	// skipping header
-	auto version = reader.read_uint();
+	const auto version = reader.read_uint();
 	// std::cout << "version: " << version << "\n";
 
 	if (version == 6) reader.read_uint();
@@ -223,35 +187,35 @@ std::shared_ptr<bake::NodeBase> load_kn5_file(load_data& target, const utils::pa
 	// skipping materials
 	for (auto i = reader.read_uint(); i > 0; i--)
 	{
-		kn5material mat;
-		mat.name = reader.read_string();
-		mat.shader = reader.read_string();
-		mat.blend = reader.read_ref<kn5material_blend>();
-		mat.alpha_tested = reader.read_bool();
-		mat.depth_mode = reader.read_uint();
+		auto mat = std::make_shared<bake::Material>();
+		mat->name = reader.read_string();
+		mat->shader = reader.read_string();
+		mat->blend = reader.read_ref<bake::MaterialBlendMode>();
+		mat->alpha_tested = reader.read_bool();
+		mat->depth_mode = reader.read_uint();
 
 		for (auto j = reader.read_int(); j > 0; j--)
 		{
-			kn5material_property prop;
+			bake::MaterialProperty prop;
 			prop.name = reader.read_string();
 			prop.v1 = reader.read_float();
 			reader.skip(4 * (2 + 3 + 4));
-			mat.properties.push_back(prop);
+			mat->vars.push_back(prop);
 		}
 
 		for (auto j = reader.read_int(); j > 0; j--)
 		{
-			kn5material_resource res;
+			bake::MaterialResource res;
 			res.name = reader.read_string();
 			res.slot = reader.read_uint();
 			res.texture = reader.read_string();
-			mat.resources.push_back(res);
+			mat->resources.push_back(res);
 		}
 
 		target.materials.push_back(mat);
 	}
 
-	return load_kn5__read_node(target, params, reader, false);
+	return load_kn5__read_node(target, params, reader);
 }
 
 std::shared_ptr<bake::Node> load_scene(const utils::path& filename, const load_params& params)
