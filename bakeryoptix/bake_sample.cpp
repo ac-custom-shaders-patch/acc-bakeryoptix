@@ -35,6 +35,7 @@
 #include <optixu/optixu_math_namespace.h>
 #include <optixu/optixu_matrix_namespace.h>
 #include <cuda/random.h>
+#include <assert.h>
 
 using namespace optix;
 
@@ -67,7 +68,7 @@ float3 operator*(const Matrix4x4& mat, const float3& v)
 }
 
 void sample_triangle(const Matrix4x4& xform, const Matrix4x4& xform_invtrans, const float3** verts, const float3** normals,
-	const size_t tri_idx, const size_t tri_sample_count, const double tri_area,	const unsigned base_seed,
+	const size_t tri_idx, const size_t tri_sample_count, const double tri_area, const unsigned base_seed,
 	float3* sample_positions, float3* sample_norms, float3* sample_face_norms, bake::SampleInfo* sample_infos)
 {
 	const auto& v0 = *verts[0];
@@ -162,58 +163,58 @@ void sample_instance(
 {
 	// Setup access to mesh data
 	const auto xform_invtrans = xform.inverse().transpose();
-	assert( ao_samples.num_samples >= mesh->num_triangles*min_samples_per_triangle );
-	assert( mesh->vertices );
-	assert( mesh->num_vertices );
-	assert( ao_samples.sample_positions );
-	assert( ao_samples.sample_normals );
-	assert( ao_samples.sample_infos );
+	assert(ao_samples.num_samples >= mesh->num_triangles*min_samples_per_triangle);
+	assert(mesh->vertices);
+	assert(mesh->num_vertices);
+	assert(ao_samples.sample_positions);
+	assert(ao_samples.sample_normals);
+	assert(ao_samples.sample_infos);
 
-	const int3* tri_vertex_indices = reinterpret_cast<int3*>(mesh->tri_vertex_indices);
+	const int3* tri_vertex_indices = reinterpret_cast<const int3*>(&mesh->triangles[0]);
 	const auto sample_positions = reinterpret_cast<float3*>(ao_samples.sample_positions);
 	const auto sample_norms = reinterpret_cast<float3*>(ao_samples.sample_normals);
 	const auto sample_face_norms = reinterpret_cast<float3*>(ao_samples.sample_face_normals);
 	const auto sample_infos = ao_samples.sample_infos;
 
-	const unsigned vertex_stride_bytes = mesh->vertex_stride_bytes > 0 ? mesh->vertex_stride_bytes : 3 * sizeof(float);
-	const unsigned normal_stride_bytes = mesh->normal_stride_bytes > 0 ? mesh->normal_stride_bytes : 3 * sizeof(float);
+	const unsigned vertex_stride_bytes = 3 * sizeof(float);
+	const unsigned normal_stride_bytes = 3 * sizeof(float);
 
 	// Compute triangle areas
-	std::vector<double> tri_areas(mesh->num_triangles, 0.0);
-	for (size_t tri_idx = 0; tri_idx < mesh->num_triangles; tri_idx++)
+	std::vector<double> tri_areas(mesh->triangles.size(), 0.0);
+	for (size_t tri_idx = 0; tri_idx < mesh->triangles.size(); tri_idx++)
 	{
 		const auto& tri = tri_vertex_indices[tri_idx];
 		const float3* verts[] = {
-			get_vertex(mesh->vertices, vertex_stride_bytes, tri.x),
-			get_vertex(mesh->vertices, vertex_stride_bytes, tri.y),
-			get_vertex(mesh->vertices, vertex_stride_bytes, tri.z)
+			(float3*)&mesh->vertices[tri.x],
+			(float3*)&mesh->vertices[tri.y],
+			(float3*)&mesh->vertices[tri.z]
 		};
 		const auto area = triangle_area(xform * verts[0][0], xform * verts[1][0], xform * verts[2][0]);
 		tri_areas[tri_idx] = area;
 	}
 
 	// Get sample counts
-	std::vector<size_t> tri_sample_counts(mesh->num_triangles, 0);
+	std::vector<size_t> tri_sample_counts(mesh->triangles.size(), 0);
 	const TriangleSamplerCallback cb(unsigned(min_samples_per_triangle), &tri_areas[0]);
-	distribute_samples_generic(cb, ao_samples.num_samples, mesh->num_triangles, &tri_sample_counts[0]);
+	distribute_samples_generic(cb, ao_samples.num_samples, mesh->triangles.size(), &tri_sample_counts[0]);
 
 	// Place samples
 	size_t sample_idx = 0;
-	for (size_t tri_idx = 0; tri_idx < mesh->num_triangles; tri_idx++)
+	for (size_t tri_idx = 0; tri_idx < mesh->triangles.size(); tri_idx++)
 	{
 		const int3& tri = tri_vertex_indices[tri_idx];
 		const float3* verts[] = {
-			get_vertex(mesh->vertices, vertex_stride_bytes, tri.x),
-			get_vertex(mesh->vertices, vertex_stride_bytes, tri.y),
-			get_vertex(mesh->vertices, vertex_stride_bytes, tri.z)
+			(float3*)&mesh->vertices[tri.x],
+			(float3*)&mesh->vertices[tri.y],
+			(float3*)&mesh->vertices[tri.z]
 		};
 		const float3** normals = nullptr;
 		const float3* norms[3];
-		if (mesh->normals)
+		if (!mesh->normals.empty())
 		{
-			norms[0] = get_vertex(mesh->normals, normal_stride_bytes, tri.x);
-			norms[1] = get_vertex(mesh->normals, normal_stride_bytes, tri.y);
-			norms[2] = get_vertex(mesh->normals, normal_stride_bytes, tri.z);
+			norms[0] = (float3*)&mesh->normals[tri.x];
+			norms[1] = (float3*)&mesh->normals[tri.y];
+			norms[2] = (float3*)&mesh->normals[tri.z];
 			normals = norms;
 		}
 		sample_triangle(xform, xform_invtrans, verts, normals,
@@ -223,7 +224,7 @@ void sample_instance(
 		sample_idx += tri_sample_counts[tri_idx];
 	}
 
-	assert( sample_idx == ao_samples.num_samples );
+	assert(sample_idx == ao_samples.num_samples);
 }
 
 void bake::sample_instances(
@@ -242,7 +243,7 @@ void bake::sample_instances(
 		}
 	}
 
-#pragma omp parallel for
+	#pragma omp parallel for
 	for (ptrdiff_t i = 0; i < ptrdiff_t(scene.receivers.size()); ++i)
 	{
 		const auto sample_offset = sample_offsets[i];
@@ -293,8 +294,8 @@ size_t bake::distribute_samples(
 	for (size_t i = 0; i < scene.receivers.size(); ++i)
 	{
 		const auto& mesh = scene.receivers[i];
-		min_samples_per_instance[i] = unsigned(min_samples_per_triangle * mesh->num_triangles);
-		num_triangles += mesh->num_triangles;
+		min_samples_per_instance[i] = unsigned(min_samples_per_triangle * mesh->triangles.size());
+		num_triangles += mesh->triangles.size();
 	}
 	const auto min_num_samples = min_samples_per_triangle * num_triangles;
 	const auto num_samples = std::max(min_num_samples, requested_num_samples);
@@ -304,20 +305,20 @@ size_t bake::distribute_samples(
 	std::vector<double> area_per_instance(scene.receivers.size(), 0.0);
 	if (num_samples > min_num_samples)
 	{
-    #pragma omp parallel for
+		#pragma omp parallel for
 		for (ptrdiff_t idx = 0; idx < ptrdiff_t(scene.receivers.size()); ++idx)
 		{
 			const auto& mesh = scene.receivers[idx];
 			const Matrix4x4 xform(scene.receivers[idx]->matrix._Elems);
-			const int3* tri_vertex_indices = reinterpret_cast<int3*>(mesh->tri_vertex_indices);
-			const unsigned vertex_stride_bytes = mesh->vertex_stride_bytes > 0 ? mesh->vertex_stride_bytes : 3 * sizeof(float);
-			for (size_t tri_idx = 0; tri_idx < mesh->num_triangles; ++tri_idx)
+			const int3* tri_vertex_indices = reinterpret_cast<const int3*>(&mesh->triangles[0]);
+			const unsigned vertex_stride_bytes = 3 * sizeof(float);
+			for (size_t tri_idx = 0; tri_idx < mesh->triangles.size(); ++tri_idx)
 			{
 				const auto& tri = tri_vertex_indices[tri_idx];
 				const float3* verts[] = {
-					get_vertex(mesh->vertices, vertex_stride_bytes, tri.x),
-					get_vertex(mesh->vertices, vertex_stride_bytes, tri.y),
-					get_vertex(mesh->vertices, vertex_stride_bytes, tri.z)
+					(float3*)&mesh->vertices[tri.x],
+					(float3*)&mesh->vertices[tri.y],
+					(float3*)&mesh->vertices[tri.z]
 				};
 				const auto area = triangle_area(xform * verts[0][0], xform * verts[1][0], xform * verts[2][0]);
 				area_per_instance[idx] += area;

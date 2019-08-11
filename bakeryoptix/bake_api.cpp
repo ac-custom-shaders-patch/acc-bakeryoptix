@@ -32,7 +32,7 @@
 #include <bake_api.h>
 #include <bake_filter.h>
 #include <bake_filter_least_squares.h>
-#include <iostream>
+#include <assert.h>
 
 using namespace optix;
 
@@ -80,7 +80,7 @@ static bool test_mesh_property(const bake::Mesh* mesh, const std::string& query,
 	valid_property = true;
 	switch (sep)
 	{
-	case 6:
+		case 6:
 		{
 			const auto p = query.substr(0, sep);
 			if (p == "shader")
@@ -89,7 +89,7 @@ static bool test_mesh_property(const bake::Mesh* mesh, const std::string& query,
 			}
 			break;
 		}
-	case 7:
+		case 7:
 		{
 			const auto p = query.substr(0, sep);
 			if (p == "texture")
@@ -102,7 +102,7 @@ static bool test_mesh_property(const bake::Mesh* mesh, const std::string& query,
 			}
 			break;
 		}
-	case 8:
+		case 8:
 		{
 			const auto p = query.substr(0, sep);
 			if (p == "material")
@@ -111,7 +111,7 @@ static bool test_mesh_property(const bake::Mesh* mesh, const std::string& query,
 			}
 			break;
 		}
-	case 16:
+		case 16:
 		{
 			const auto p = query.substr(0, sep);
 			if (p == "materialProperty")
@@ -124,16 +124,21 @@ static bool test_mesh_property(const bake::Mesh* mesh, const std::string& query,
 			}
 			break;
 		}
-	default: break;
+		default: break;
 	}
 	valid_property = false;
 	return false;
 }
 
-bool bake::Mesh::matches(const std::string& query)
+bool bake::Mesh::matches(const std::string& query) const
 {
 	bool valid_property;
 	return std_ext::match(query, name) || test_mesh_property(this, query, valid_property);
+}
+
+void bake::Bone::solve(const std::shared_ptr<Node>& root)
+{
+	node = root->find_node(name);
 }
 
 void bake::Node::update_matrix()
@@ -160,15 +165,15 @@ void bake::NodeTransition::apply(float progress) const
 {
 	progress = clamp(progress, 0.f, 1.f);
 
-	const auto frame_prev = uint(floorf((frames.size() - 1) * progress));
-	const auto frame_next = uint(ceilf((frames.size() - 1) * progress));
+	const auto frame_prev = uint(floorf((float(frames.size()) - 1.f) * progress));
+	const auto frame_next = uint(ceilf((float(frames.size()) - 1.f) * progress));
 	if (frame_next == frame_prev)
 	{
 		node->matrix_local = frames[frame_next];
 	}
 	else
 	{
-		const auto mix = clamp((frames.size() - 1) * progress - frame_prev, 0.f, 1.f);
+		const auto mix = clamp((float(frames.size()) - 1.f) * progress - frame_prev, 0.f, 1.f);
 		node->matrix_local = lerp_tranformation(frames[frame_prev], frames[frame_next], mix);
 	}
 }
@@ -187,6 +192,7 @@ bake::Scene::Scene(const std::vector<std::shared_ptr<Node>>& nodes)
 {
 	for (const auto& n : nodes)
 	{
+		if (!n) continue;
 		n->update_matrix();
 		for (const auto& m : n->get_meshes())
 		{
@@ -194,16 +200,36 @@ bake::Scene::Scene(const std::vector<std::shared_ptr<Node>>& nodes)
 			if (m->receive_shadows) receivers.push_back(m);
 			if (m->cast_shadows) blockers.push_back(m);
 
-			const auto& x = to_matrix(m->matrix);
+			const auto& x = to_matrix(m->matrix).transpose();
 			float4 f4;
 			f4.w = 1.f;
 
-			for (auto i = 0U; i < m->num_vertices; i += 3)
+			for (auto& v : m->vertices)
 			{
-				*(float3*)&f4 = *(float3*)&m->vertices[i * 3];
+				*(float3*)&f4 = *(float3*)&v;
 				const auto w = f4 * x;
 				expand_bbox(bbox_min, bbox_max, &w.x);
 			}
+		}
+	}
+}
+
+void bake::HierarchyNode::align(const std::shared_ptr<bake::Node>& root)
+{
+	auto target = root->name == name ? root : root->find_node(name);
+	if (target)
+	{
+		target->matrix_local = target->matrix_local_orig = matrix_local;
+		for (const auto& c : children)
+		{
+			c->align(target);
+		}
+	}
+	else
+	{
+		for (const auto& c : children)
+		{
+			c->align(root);
 		}
 	}
 }

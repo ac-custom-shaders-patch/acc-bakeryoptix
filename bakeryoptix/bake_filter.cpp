@@ -27,7 +27,6 @@
 
 #include "bake_filter.h"
 #include <bake_api.h>
-#include <cassert>
 #include <vector>
 #include <optixu/optixu_math_namespace.h>
 
@@ -42,10 +41,10 @@ namespace
 		const float* ao_values,
 		float* vertex_ao)
 	{
-		std::vector<double> weights(mesh->num_vertices, 0.0);
-		std::fill(vertex_ao, vertex_ao + mesh->num_vertices, 0.0f);
+		std::vector<double> weights(mesh->vertices.size(), 0.0);
+		std::fill(vertex_ao, vertex_ao + mesh->vertices.size(), 0.0f);
 
-		const int3* tri_vertex_indices = reinterpret_cast<int3*>(mesh->tri_vertex_indices);
+		const int3* tri_vertex_indices = reinterpret_cast<const int3*>(&mesh->triangles[0]);
 
 		for (size_t i = 0; i < ao_samples.num_samples; ++i)
 		{
@@ -67,7 +66,7 @@ namespace
 			weights[tri.z] += w[2];
 		}
 
-		for (size_t k = 0; k < mesh->num_vertices; ++k)
+		for (size_t k = 0; k < mesh->vertices.size(); ++k)
 		{
 			if (weights[k] > 0.0) vertex_ao[k] /= static_cast<float>(weights[k]);
 		}

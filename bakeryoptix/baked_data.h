@@ -12,7 +12,7 @@ namespace bake {
 	struct Mesh;
 }
 
-typedef std::vector<float> baked_data_mesh;
+typedef std::vector<float2> baked_data_mesh;
 
 struct save_params
 {
@@ -27,8 +27,9 @@ struct save_params
 struct baked_data
 {
 	std::map<std::shared_ptr<bake::Mesh>, baked_data_mesh> entries;
-	void save(const utils::path& destination, const save_params& params) const;
+	void save(const utils::path& destination, const save_params& params, bool store_secondary_set) const;
 	void replace(const baked_data& b);
+	void replace_primary(const baked_data& b);
 	void max(const baked_data& b, float mult_b = 1.f);
 	void average(const baked_data& b, float mult_b, float mult_base);
 	void extend(const baked_data& b);

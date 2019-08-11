@@ -33,9 +33,6 @@
     <ClCompile Include="main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="app_config.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="bake_wrap.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -851,9 +848,6 @@
     <ClInclude Include="eigen\Eigen\src\UmfPackSupport\UmfPackSupport.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="app_config.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="bake_wrap.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -903,6 +897,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="utils\perf_moment.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\dbg_output.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

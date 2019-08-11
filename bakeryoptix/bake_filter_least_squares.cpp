@@ -42,6 +42,7 @@
 #include <eigen/Core>
 #include <eigen/Geometry>
 #include <eigen/SparseCholesky>
+#include <assert.h>
 
 using namespace optix;
 
@@ -60,7 +61,7 @@ namespace
 	{
 		const vector3 ba = b - a;
 		const vector3 ca = c - a;
-		auto crop = ba.cross(ca);
+		const auto crop = ba.cross(ca);
 		return crop.norm() * 0.5f;
 	}
 
@@ -69,15 +70,15 @@ namespace
 	// If triangle is close to degenerate returns false and p is undefined.
 	bool planarize_triangle(const vector3 v[3], vector2 p[3])
 	{
-		double l01 = (v[0] - v[1]).norm();
-		double l02 = (v[0] - v[2]).norm();
-		double l12 = (v[1] - v[2]).norm();
+		const auto l01 = (v[0] - v[1]).norm();
+		const auto l02 = (v[0] - v[2]).norm();
+		const auto l12 = (v[1] - v[2]).norm();
 
-		const double eps = 0.0;
+		const auto eps = 0.0;
 		if (l01 <= eps || l02 <= eps || l12 <= eps) return false;
 
-		double p2y = (l02 * l02 + l01 * l01 - l12 * l12) / (2.0 * l01);
-		double tmp1 = l02 * l02 - p2y * p2y;
+		const auto p2y = (l02 * l02 + l01 * l01 - l12 * l12) / (2.0 * l01);
+		const auto tmp1 = l02 * l02 - p2y * p2y;
 		if (tmp1 <= eps) return false;
 
 		p[0] = vector2(0.0f, 0.0f);
@@ -170,10 +171,10 @@ namespace
 		return reinterpret_cast<const float3*>(reinterpret_cast<const unsigned char*>(v) + index * stride_bytes);
 	}
 
-	void edge_based_regularizer(const float* verts, size_t num_verts, unsigned vertex_stride_bytes, const int3* faces, const size_t num_faces,
+	void edge_based_regularizer(const float* verts, size_t num_verts, const int3* faces, const size_t num_faces,
 		sparse_matrix& regularization_matrix)
 	{
-		const unsigned stride_bytes = vertex_stride_bytes > 0 ? vertex_stride_bytes : 3 * sizeof(float);
+		const unsigned stride_bytes = 3 * sizeof(float);
 
 		// Build edge map.  Each non-boundary edge stores the two opposite "butterfly" vertices that do not lie on the edge.
 		edge_map edges;
@@ -256,8 +257,8 @@ namespace
 		const bake::Mesh* mesh,
 		sparse_matrix& regularization_matrix)
 	{
-		const int3* tri_vertex_indices = reinterpret_cast<int3*>(mesh->tri_vertex_indices);
-		edge_based_regularizer(mesh->vertices, mesh->num_vertices, mesh->vertex_stride_bytes, tri_vertex_indices, mesh->num_triangles, regularization_matrix);
+		const int3* tri_vertex_indices = reinterpret_cast<const int3*>(&mesh->triangles[0]);
+		edge_based_regularizer(&mesh->vertices[0].x, mesh->vertices.size(), tri_vertex_indices, mesh->triangles.size(), regularization_matrix);
 	}
 
 	void filter_mesh_least_squares(
@@ -268,11 +269,11 @@ namespace
 		const sparse_matrix& regularization_matrix,
 		float* vertex_ao)
 	{
-		std::fill(vertex_ao, vertex_ao + mesh->num_vertices, 0.0f);
+		std::fill(vertex_ao, vertex_ao + mesh->vertices.size(), 0.0f);
 		
 		std::vector<triplet> triplets;
 		triplets.reserve(ao_samples.num_samples * 9);
-		const int3* tri_vertex_indices = reinterpret_cast<int3*>(mesh->tri_vertex_indices);
+		const int3* tri_vertex_indices = reinterpret_cast<const int3*>(&mesh->triangles[0]);
 
 		for (size_t i = 0; i < ao_samples.num_samples; i++)
 		{
@@ -311,14 +312,14 @@ namespace
 		}
 
 		// Mass matrix
-		sparse_matrix mass_matrix(int(mesh->num_vertices), int(mesh->num_vertices));
+		sparse_matrix mass_matrix(int(mesh->vertices.size()), int(mesh->vertices.size()));
 		mass_matrix.setFromTriplets(triplets.begin(), triplets.end());
 
 		// Fix missing data due to unreferenced verts
 		{
-			const Eigen::VectorXd ones = Eigen::VectorXd::Constant(mesh->num_vertices, 1.0);
+			const Eigen::VectorXd ones = Eigen::VectorXd::Constant(mesh->vertices.size(), 1.0);
 			Eigen::VectorXd lumped = mass_matrix * ones;
-			for (auto i = 0U; i < mesh->num_vertices; i++)
+			for (auto i = 0U; i < mesh->vertices.size(); i++)
 			{
 				if (lumped(i) <= 0.0)
 				{
@@ -343,9 +344,9 @@ namespace
 
 		assert( solver.info() == Eigen::Success );
 
-		Eigen::VectorXd b(mesh->num_vertices);
-		Eigen::VectorXd x(mesh->num_vertices);
-		for (size_t k = 0; k < mesh->num_vertices; ++k)
+		Eigen::VectorXd b(mesh->vertices.size());
+		Eigen::VectorXd x(mesh->vertices.size());
+		for (size_t k = 0; k < mesh->vertices.size(); ++k)
 		{
 			b(k) = vertex_ao[k];
 			x(k) = 0.0;
@@ -356,7 +357,7 @@ namespace
 		assert( solver.info() == Eigen::Success ); // for debug build
 		if (solver.info() == Eigen::Success)
 		{
-			for (size_t k = 0; k < mesh->num_vertices; ++k)
+			for (size_t k = 0; k < mesh->vertices.size(); ++k)
 			{
 				vertex_ao[k] = static_cast<float>(x(k)); // Note: allow out-of-range values
 			}

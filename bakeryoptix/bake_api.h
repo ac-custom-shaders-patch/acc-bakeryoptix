@@ -28,6 +28,7 @@
 #pragma once
 #include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 #include <array>
 #include <memory>
@@ -117,15 +118,26 @@ namespace bake
 		}
 	};
 
+	struct Triangle
+	{
+		uint32_t a, b, c;
+	};
+
+	struct Vec3
+	{
+		float x, y, z;
+	};
+
+	struct Vec4
+	{
+		float x, y, z, w;
+	};
+
 	struct Mesh : NodeBase
 	{
-		size_t num_vertices;
-		float* vertices;
-		unsigned vertex_stride_bytes;
-		float* normals;
-		unsigned normal_stride_bytes;
-		size_t num_triangles;
-		unsigned int* tri_vertex_indices;
+		std::vector<Vec3> vertices;
+		std::vector<Vec3> normals;
+		std::vector<Triangle> triangles;
 		bool cast_shadows;
 		bool receive_shadows;
 		bool visible;
@@ -137,7 +149,29 @@ namespace bake
 			active = parent->active && active_local;
 		}
 
-		bool matches(const std::string& query);
+		bool matches(const std::string& query) const;
+	};
+
+	struct Node;
+
+	struct Bone
+	{
+		std::string name;
+		NodeTransformation tranform = NodeTransformation::identity();
+		std::shared_ptr<Node> node{};
+
+		Bone(std::string name, const NodeTransformation& matrix = NodeTransformation::identity())
+			: name(std::move(name)), tranform(matrix)
+		{ }
+
+		void solve(const std::shared_ptr<Node>& root);
+	};
+
+	struct SkinnedMesh : Mesh
+	{
+		std::vector<Bone> bones;
+		std::vector<Vec4> bone_ids;
+		std::vector<Vec4> weights;
 	};
 
 	struct Node : NodeBase
@@ -304,6 +338,19 @@ namespace bake
 
 		float bbox_min[3]{FLT_MAX, FLT_MAX, FLT_MAX};
 		float bbox_max[3]{-FLT_MAX, -FLT_MAX, -FLT_MAX};
+	};
+
+	struct HierarchyNode
+	{
+		std::string name;
+		NodeTransformation matrix_local;
+		std::vector<std::shared_ptr<HierarchyNode>> children;
+
+		HierarchyNode(const std::string& name, const NodeTransformation& matrix = NodeTransformation::identity())
+			: name(name), matrix_local(matrix)
+		{ }
+
+		void align(const std::shared_ptr<bake::Node>& root);
 	};
 
 	struct AOSamples

@@ -1,30 +1,32 @@
 ﻿#include "bake_wrap.h"
 
 #include <cassert>
-#include <optixu/optixu_matrix_namespace.h>
 
 #include <utils/perf_moment.h>
 #include <utils/load_scene_util.h>
 #include <bake_ao_optix_prime.h>
 #include <bake_api.h>
 #include <bake_sample.h>
+#include <assert.h>
+#include <utils/dbg_output.h>
 
 void set_vertex_entry(float* vertices, const int idx, const int axis, float* vec)
 {
 	vertices[3 * idx + axis] = vec[axis];
 }
 
-void make_ground_plane(const float scene_bbox_min[3], const float scene_bbox_max[3],
-	unsigned upaxis, const float scale_factor, const float offset_factor,
-	const unsigned scene_vertex_stride_bytes,
-	std::vector<float>& plane_vertices, std::vector<unsigned int>& plane_indices,
-	std::vector<bake::Mesh*>& meshes,
-	bake::Scene& scene)
+void make_ground_plane(const float scene_bbox_min[3], const float scene_bbox_max[3], int upaxis, const float scale_factor, 
+	const float offset_factor, std::vector<bake::Mesh*>& meshes, bake::Scene& scene)
 {
-	const unsigned int index_data[] = {0, 1, 2, 0, 2, 3, 2, 1, 0, 3, 2, 0};
-	const unsigned int num_indices = sizeof(index_data) / sizeof(index_data[0]);
-	plane_indices.resize(num_indices);
-	std::copy(index_data, index_data + num_indices, plane_indices.begin());
+	auto plane_mesh = new bake::Mesh();
+	plane_mesh->vertices.resize(4);
+	plane_mesh->triangles = {
+		{0, 1, 2},
+		{0, 2, 3},
+		{2, 1, 0},
+		{3, 2, 0}
+	};
+
 	float scene_extents[] = {
 		scene_bbox_max[0] - scene_bbox_min[0],
 		scene_bbox_max[1] - scene_bbox_min[1],
@@ -54,8 +56,8 @@ void make_ground_plane(const float scene_bbox_min[3], const float scene_bbox_max
 		ground_max[upaxis] = scene_bbox_min[upaxis] - scene_extents[upaxis] * offset_factor;
 	}
 
-	const int axis0 = (upaxis + 2) % 3;
-	const int axis1 = (upaxis + 1) % 3;
+	const auto axis0 = (upaxis + 2) % 3;
+	const auto axis1 = (upaxis + 1) % 3;
 
 	float vertex_data[4 * 3] = {};
 	set_vertex_entry(vertex_data, 0, upaxis, ground_min);
@@ -74,27 +76,13 @@ void make_ground_plane(const float scene_bbox_min[3], const float scene_bbox_max
 	set_vertex_entry(vertex_data, 3, axis0, ground_min);
 	set_vertex_entry(vertex_data, 3, axis1, ground_max);
 
-	// OptiX Prime requires all meshes in the same scene to have the same vertex stride.
-	const unsigned vertex_stride_bytes = scene_vertex_stride_bytes > 0 ? scene_vertex_stride_bytes : 3 * sizeof(float);
-	assert(vertex_stride_bytes % sizeof(float) == 0);
-	const unsigned num_floats_per_vert = vertex_stride_bytes / sizeof(float);
-	plane_vertices.resize(4 * (num_floats_per_vert));
-	std::fill(plane_vertices.begin(), plane_vertices.end(), 0.f);
 	for (size_t i = 0; i < 4; ++i)
 	{
-		plane_vertices[num_floats_per_vert * i] = vertex_data[3 * i];
-		plane_vertices[num_floats_per_vert * i + 1] = vertex_data[3 * i + 1];
-		plane_vertices[num_floats_per_vert * i + 2] = vertex_data[3 * i + 2];
+		plane_mesh->vertices[i].x = vertex_data[3 * i];
+		plane_mesh->vertices[i].y = vertex_data[3 * i + 1];
+		plane_mesh->vertices[i].z = vertex_data[3 * i + 2];
 	}
 
-	auto plane_mesh = new bake::Mesh();
-	plane_mesh->num_vertices = 4;
-	plane_mesh->num_triangles = num_indices / 3;
-	plane_mesh->vertices = &plane_vertices[0];
-	plane_mesh->vertex_stride_bytes = vertex_stride_bytes;
-	plane_mesh->normals = nullptr;
-	plane_mesh->normal_stride_bytes = 0;
-	plane_mesh->tri_vertex_indices = &plane_indices[0];
 	plane_mesh->matrix = bake::NodeTransformation::identity();
 	expand_bbox(scene.bbox_min, scene.bbox_max, ground_min);
 	expand_bbox(scene.bbox_min, scene.bbox_max, ground_max);
@@ -166,12 +154,9 @@ baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene, cons
 			}
 		}
 
-		std::vector<float> plane_vertices;
-		std::vector<unsigned int> plane_indices;
 		if (config.use_ground_plane_blocker)
 		{
-			make_ground_plane(scene->bbox_min, scene->bbox_max, config.ground_upaxis, config.ground_scale_factor, config.ground_offset_factor,
-				scene->receivers[0]->vertex_stride_bytes, plane_vertices, plane_indices, blocker_meshes, *scene);
+			make_ground_plane(scene->bbox_min, scene->bbox_max, config.ground_upaxis, config.ground_scale_factor, config.ground_offset_factor, blocker_meshes, *scene);
 		}
 
 		ao_optix_prime(blocker_meshes, ao_samples,
@@ -185,7 +170,7 @@ baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene, cons
 		PERF("\tMapping AO to vertices");
 		for (size_t i = 0U; i < scene->receivers.size(); i++)
 		{
-			vertex_ao[i] = new float[ scene->receivers[i]->num_vertices ];
+			vertex_ao[i] = new float[ scene->receivers[i]->vertices.size() ];
 		}
 		map_ao_to_vertices(*scene, &num_samples_per_instance[0], ao_samples, &ao_values[0], config.filter_mode, config.regularization_weight, vertex_ao);
 	}
@@ -195,10 +180,10 @@ baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene, cons
 	for (auto i = 0U; i < scene->receivers.size(); i++)
 	{
 		auto& m = scene->receivers[i];
-		baked_data_mesh v(m->num_vertices);
-		for (auto j = 0U; j < m->num_vertices; j++)
+		baked_data_mesh v(m->vertices.size());
+		for (auto j = 0U; j < m->vertices.size(); j++)
 		{
-			v[j] = vertex_ao[i][j];
+			v[j].x = v[j].y = vertex_ao[i][j];
 		}
 		result.entries[scene->receivers[i]] = v;
 	}

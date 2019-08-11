@@ -22,7 +22,7 @@
     <ProjectGuid>{E8286CC2-0FEF-4BF5-8935-F716E6D3AF89}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>bakeryoptix</RootNamespace>
-    <WindowsTargetPlatformVersion>8.1</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.17134.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -158,7 +158,6 @@
     </CudaCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="app_config.cpp" />
     <ClCompile Include="baked_data.cpp" />
     <ClCompile Include="bake_ao_optix_prime.cpp" />
     <ClCompile Include="bake_api.cpp" />
@@ -188,7 +187,6 @@
     <ClInclude Include="bake_util.h" />
     <ClInclude Include="bake_wrap.h" />
     <ClInclude Include="cuda\buffer.h" />
-    <ClInclude Include="app_config.h" />
     <ClInclude Include="eigen\Eigen\src\Cholesky\LDLT.h" />
     <ClInclude Include="eigen\Eigen\src\Cholesky\LLT.h" />
     <ClInclude Include="eigen\Eigen\src\Cholesky\LLT_MKL.h" />
@@ -442,6 +440,7 @@
     <ClInclude Include="eigen\Eigen\src\SVD\UpperBidiagonalization.h" />
     <ClInclude Include="eigen\Eigen\src\UmfPackSupport\UmfPackSupport.h" />
     <ClInclude Include="utils\binary_reader.h" />
+    <ClInclude Include="utils\dbg_output.h" />
     <ClInclude Include="utils\filesystem.h" />
     <ClInclude Include="utils\half.h" />
     <ClInclude Include="utils\ini_file.h" />

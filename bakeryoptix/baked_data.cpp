@@ -10,7 +10,7 @@
 #include <utils/filesystem.h>
 #include <utils/ini_file.h>
 #include <bake_api.h>
-#include <iomanip>
+#include <utils/dbg_output.h>
 
 template <typename T>
 void add_bytes(std::basic_string<uint8_t>& d, const T& value)
@@ -30,7 +30,7 @@ void add_string(std::basic_string<uint8_t>& d, const std::string& value)
 	}
 }
 
-void baked_data::save(const utils::path& destination, const save_params& params) const
+void baked_data::save(const utils::path& destination, const save_params& params, bool store_secondary_set) const
 {
 	using namespace optix;
 	std::basic_string<uint8_t> data;
@@ -43,19 +43,12 @@ void baked_data::save(const utils::path& destination, const save_params& params)
 		const auto m = entry.first;
 		auto ao = entry.second;
 
-		add_string(data, m->name);
-		add_bytes(data, int(1));
-		add_bytes(data, m->vertices[0]);
-		add_bytes(data, m->vertices[1]);
-		add_bytes(data, m->vertices[2]);
-		add_bytes(data, int(m->num_vertices));
-
 		if (params.averaging_threshold > 0.f)
 		{
-			if (m->num_vertices > nearbyes.size())
+			if (m->vertices.size() > nearbyes.size())
 			{
-				nearbyes.resize(m->num_vertices);
-				averaged.resize(m->num_vertices);
+				nearbyes.resize(m->vertices.size());
+				averaged.resize(m->vertices.size());
 			}
 			std::fill(averaged.begin(), averaged.end(), false);
 
@@ -66,29 +59,29 @@ void baked_data::save(const utils::path& destination, const save_params& params)
 			};
 
 			std::vector<vertex> vertices_conv;
-			vertices_conv.reserve(m->num_vertices);
-			for (auto j = 0U; j < m->num_vertices; j++)
+			vertices_conv.reserve(m->vertices.size());
+			for (auto j = 0U; j < m->vertices.size(); j++)
 			{
-				vertices_conv.push_back({m->vertices[j * 3], j});
+				vertices_conv.push_back({m->vertices[j].x, j});
 			}
 			std::sort(vertices_conv.begin(), vertices_conv.end(), [](const vertex& a, const vertex& b) { return a.pos > b.pos; });
 
-			for (auto j2 = 0U; j2 < m->num_vertices; j2++)
+			/*for (auto j2 = 0U; j2 < m->vertices.size(); j2++)
 			{
 				const auto j = vertices_conv[j2].index;
 				if (averaged[j]) continue;
-				const auto& jp = *(float3*)&m->vertices[j * 3];
-				const auto& jn = *(float3*)&m->normals[j * 3];
+				const auto& jp = *(float3*)&m->vertices[j];
+				const auto& jn = *(float3*)&m->normals[j];
 				auto t = ao[j];
 				auto nearbyes_size = 0U;
-				for (auto k2 = j2 + 1; k2 < m->num_vertices && k2 - j2 < 100; k2++)
+				for (auto k2 = j2 + 1; k2 < m->vertices.size() && k2 - j2 < 100; k2++)
 				{
 					const auto k = vertices_conv[k2].index;
-					const auto& kn = *(float3*)&m->normals[k * 3];
+					const auto& kn = *(float3*)&m->normals[k];
 					const auto nd = dot(jn, kn);
 					if (nd < params.averaging_cos_threshold) continue;
 
-					const auto& kp = *(float3*)&m->vertices[k * 3];
+					const auto& kp = *(float3*)&m->vertices[k];
 					const auto dp = jp - kp;
 					const auto dq = std::max(abs(dp.x), std::max(abs(dp.y), abs(dp.z)));
 
@@ -108,16 +101,30 @@ void baked_data::save(const utils::path& destination, const save_params& params)
 						averaged[nearbyes[k]] = true;
 					}
 				}
-			}
+			}*/
 		}
 
-		// std::cout << "name=" << m->name << ": ";
-		for (auto j = 0U; j < m->num_vertices; j++)
+		add_string(data, m->name);
+		add_bytes(data, int(1));
+		add_bytes(data, m->vertices[0]);
+		add_bytes(data, int(m->vertices.size()));
+		for (auto j = 0U; j < m->vertices.size(); j++)
 		{
-			// std::cout << std::setprecision(2) << ao[j] << ", ";
-			add_bytes(data, half_float::half(ao[j]));
+			add_bytes(data, half_float::half(ao[j].x));
 		}
-		// std::cout << "\n";
+
+		if (store_secondary_set)
+		{
+			// std::cout << "Store secondary set: " << m->name << "\n";
+			add_string(data, m->name);
+			add_bytes(data, int(3));
+			add_bytes(data, m->vertices[0]);
+			add_bytes(data, int(m->vertices.size()));
+			for (auto j = 0U; j < m->vertices.size(); j++)
+			{
+				add_bytes(data, half_float::half(ao[j].y));
+			}
+		}
 	}
 
 	remove(destination.string().c_str());
@@ -133,6 +140,23 @@ void baked_data::save(const utils::path& destination, const save_params& params)
 		config_data.c_str(), config_data.size(), nullptr, 0, 0);
 }
 
+baked_data_mesh replace_primary_mesh_data(const baked_data_mesh& b, const baked_data_mesh& base)
+{
+	baked_data_mesh result;
+	if (b.size() != base.size())
+	{
+		std::cerr << "\n[ ERROR: Sizes do not match. ]\n";
+		exit(1);
+	}
+	result.resize(b.size());
+	for (auto i = 0U; i < b.size(); i++)
+	{
+		result[i].x = b[i].x;
+		result[i].y = base[i].y;
+	}
+	return result;
+}
+
 baked_data_mesh merge_mesh_data(const baked_data_mesh& b, const baked_data_mesh& base, float mult_b)
 {
 	baked_data_mesh result;
@@ -144,7 +168,8 @@ baked_data_mesh merge_mesh_data(const baked_data_mesh& b, const baked_data_mesh&
 	result.resize(b.size());
 	for (auto i = 0U; i < b.size(); i++)
 	{
-		result[i] = std::max(b[i] * mult_b, base[i]);
+		result[i].x = std::max(b[i].x * mult_b, base[i].x);
+		result[i].y = base[i].y;
 	}
 	return result;
 }
@@ -160,9 +185,21 @@ baked_data_mesh average_mesh_data(const baked_data_mesh& b, const baked_data_mes
 	result.resize(b.size());
 	for (auto i = 0U; i < b.size(); i++)
 	{
-		result[i] = b[i] * mult_b + base[i] * mult_base;
+		result[i].x = b[i].x * mult_b + base[i].x * mult_base;
+		result[i].y = base[i].y;
 	}
 	return result;
+}
+
+void baked_data::replace_primary(const baked_data& b)
+{
+	for (const auto& p : b.entries)
+	{
+		auto f = entries.find(p.first);
+		entries[p.first] = f == entries.end()
+			? p.second
+			: replace_primary_mesh_data(p.second, f->second);
+	}
 }
 
 void baked_data::max(const baked_data& b, float mult_b)
@@ -171,8 +208,8 @@ void baked_data::max(const baked_data& b, float mult_b)
 	{
 		auto f = entries.find(p.first);
 		entries[p.first] = f == entries.end()
-				? p.second
-				: merge_mesh_data(p.second, f->second, mult_b);
+			? p.second
+			: merge_mesh_data(p.second, f->second, mult_b);
 	}
 }
 
@@ -190,8 +227,8 @@ void baked_data::average(const baked_data& b, float mult_b, float mult_base)
 	{
 		auto f = entries.find(p.first);
 		entries[p.first] = f == entries.end()
-				? p.second
-				: average_mesh_data(p.second, f->second, mult_b, mult_base);
+			? p.second
+			: average_mesh_data(p.second, f->second, mult_b, mult_base);
 	}
 }
 
@@ -211,9 +248,9 @@ void baked_data::fill(const std::shared_ptr<bake::Mesh>& mesh, float x)
 {
 	if (!mesh) return;
 	auto& entry = entries[mesh];
-	entry.resize(mesh->num_vertices);
-	for (auto j = 0U; j < mesh->num_vertices; j++)
+	entry.resize(mesh->vertices.size());
+	for (auto j = 0U; j < mesh->vertices.size(); j++)
 	{
-		entry[j] = x;
+		entry[j] = float2{x, x};
 	}
 }

@@ -19,6 +19,26 @@ struct load_data
 	std::vector<std::shared_ptr<bake::Material>> materials;
 };
 
+static std::shared_ptr<bake::HierarchyNode> load_knh__read_node(utils::binary_reader& reader)
+{
+	const auto name = reader.read_string();
+	const auto transformation = reader.read_f4x4().transpose();
+	const auto result = std::make_shared<bake::HierarchyNode>(name, transformation);
+	result->children.resize(reader.read_uint());
+	for (auto i = 0U; i < result->children.size(); i++)
+	{
+		result->children[i] = load_knh__read_node(reader);
+	}
+	return result;
+}
+
+std::shared_ptr<bake::HierarchyNode> load_hierarchy(const utils::path& filename)
+{
+	if (!exists(filename)) return nullptr;
+	utils::binary_reader reader(filename);
+	return load_knh__read_node(reader);
+}
+
 static std::shared_ptr<bake::Mesh> load_kn5__read_mesh(load_data& target, const load_params& params, utils::binary_reader& reader)
 {
 	const auto cast_shadows = reader.read_bool();
@@ -27,29 +47,26 @@ static std::shared_ptr<bake::Mesh> load_kn5__read_mesh(load_data& target, const 
 
 	auto mesh = std::make_shared<bake::Mesh>();
 	mesh->cast_shadows = cast_shadows && !is_transparent;
-	mesh->vertex_stride_bytes = 0;
-	mesh->normal_stride_bytes = 0;
 
 	const auto vertices = reader.read_uint();
-	mesh->num_vertices = vertices;
-	mesh->vertices = new float[vertices * 3];
-	mesh->normals = new float[vertices * 3];
+	mesh->vertices.resize(vertices);
+	mesh->normals.resize(vertices);
+
 	for (auto i = 0U; i < vertices; i++)
 	{
-		const auto pos = reader.read_f3();
-		auto normal = reader.read_f3();
+		const auto pos = reader.read_ref<bake::Vec3>();
+		auto normal = reader.read_ref<bake::Vec3>();
 		reader.skip(sizeof(float2) + sizeof(float3));
 		normal.y += params.normals_bias;
-		*(float3*)&mesh->vertices[i * 3] = pos;
-		*(float3*)&mesh->normals[i * 3] = optix::normalize(normal);
+		mesh->vertices[i] = pos;
+		*(float3*)&mesh->normals[i] = normalize(*(float3*)&normal);
 	}
 
 	const auto indices = reader.read_uint();
-	mesh->num_triangles = indices / 3;
-	mesh->tri_vertex_indices = new unsigned[indices];
-	for (auto i = 0U; i < indices; i++)
+	mesh->triangles.resize(indices / 3);
+	for (auto& t : mesh->triangles)
 	{
-		mesh->tri_vertex_indices[i] = reader.read_ushort();
+		t = {reader.read_ushort(), reader.read_ushort(), reader.read_ushort()};
 	}
 
 	const auto material = target.materials[reader.read_uint()];
@@ -87,7 +104,7 @@ static std::shared_ptr<bake::NodeBase> load_kn5__read_node(load_data& target, co
 
 	switch (node_class)
 	{
-	case 0:
+		case 0:
 		{
 			auto result = std::make_shared<bake::Node>(name, bake::NodeTransformation::identity());
 			for (auto i = node_children; i > 0; i--)
@@ -98,7 +115,7 @@ static std::shared_ptr<bake::NodeBase> load_kn5__read_node(load_data& target, co
 			return result;
 		}
 
-	case 1:
+		case 1:
 		{
 			auto result = std::make_shared<bake::Node>(name, reader.read_f4x4().transpose());
 			for (auto i = node_children; i > 0; i--)
@@ -109,7 +126,7 @@ static std::shared_ptr<bake::NodeBase> load_kn5__read_node(load_data& target, co
 			return result;
 		}
 
-	case 2:
+		case 2:
 		{
 			auto result = load_kn5__read_mesh(target, params, reader);
 			if (result)
@@ -138,7 +155,7 @@ static std::shared_ptr<bake::NodeBase> load_kn5__read_node(load_data& target, co
 			return result;
 		}
 
-	case 3:
+		case 3:
 		{
 			reader.skip(3); // cast shadows + is visible + is transparent
 			for (auto i = reader.read_uint(); i > 0; i--)
@@ -151,12 +168,12 @@ static std::shared_ptr<bake::NodeBase> load_kn5__read_node(load_data& target, co
 			reader.skip(reader.read_uint() * vs);
 			reader.skip(reader.read_uint() * sizeof(uint16_t));
 			reader.skip(4 + 4); // material ID + layer
-			reader.skip(8); // mystery bytes
+			reader.skip(8);     // mystery bytes
 			return nullptr;
 		}
 
-	default: std::cerr << "Unexpected node class: " << node_class;
-		return nullptr;
+		default: std::cerr << "Unexpected node class: " << node_class;
+			return nullptr;
 	}
 }
 
@@ -232,7 +249,7 @@ std::shared_ptr<bake::Node> load_scene(const utils::path& filename, const load_p
 	}
 	else
 	{
-		auto ini = utils::ini_file(filename);
+		const auto ini = utils::ini_file(filename);
 		for (const auto& s : ini.iterate("MODEL"))
 		{
 			result->add_child(load_kn5_file(target, p.parent_path() / ini.get(s, "FILE", std::string()), params));
@@ -273,7 +290,7 @@ Matrix4x4 rotation_quaternion(const float4& rotation)
 	return matrix.transpose();
 }
 
-bake::Animation load_ksanim(const utils::path& filename, const std::shared_ptr<bake::Node>& root)
+bake::Animation load_ksanim(const utils::path& filename, const std::shared_ptr<bake::Node>& root, bool include_static)
 {
 	bake::Animation result;
 	if (!exists(filename)) return result;
@@ -294,7 +311,7 @@ bake::Animation load_ksanim(const utils::path& filename, const std::shared_ptr<b
 		bake::NodeTransition entry;
 		entry.node = root->find_node(name);
 		entry.frames.resize(frames_count);
-		auto dif = false;
+		auto dif = include_static;
 
 		for (auto j = 0U; j < frames_count; j++)
 		{

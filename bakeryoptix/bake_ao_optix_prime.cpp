@@ -60,29 +60,29 @@ namespace
 
 			// Allocate or reuse vertex buffer and index buffer
 			Buffer<float3>* vertex_buffer = nullptr;
-			if (unique_vertex_buffers.find(mesh->vertices) != unique_vertex_buffers.end())
+			if (unique_vertex_buffers.find(&mesh->vertices[0].x) != unique_vertex_buffers.end())
 			{
-				vertex_buffer = unique_vertex_buffers.find(mesh->vertices)->second;
+				vertex_buffer = unique_vertex_buffers.find(&mesh->vertices[0].x)->second;
 			}
 			else
 			{
 				// Note: copy disabled for Buffer, so need pointer here
-				vertex_buffer = new Buffer<float3>(mesh->num_vertices, RTP_BUFFER_TYPE_CUDA_LINEAR, UNLOCKED, mesh->vertex_stride_bytes);
-				cudaMemcpy(vertex_buffer->ptr(), mesh->vertices, vertex_buffer->size_in_bytes(), cudaMemcpyHostToDevice);
-				unique_vertex_buffers[mesh->vertices] = vertex_buffer;
+				vertex_buffer = new Buffer<float3>(mesh->vertices.size(), RTP_BUFFER_TYPE_CUDA_LINEAR, UNLOCKED);
+				cudaMemcpy(vertex_buffer->ptr(), &mesh->vertices[0].x, vertex_buffer->size_in_bytes(), cudaMemcpyHostToDevice);
+				unique_vertex_buffers[&mesh->vertices[0].x] = vertex_buffer;
 				allocated_vertex_buffers.push_back(vertex_buffer);
 			}
 
 			Buffer<int3>* index_buffer = nullptr;
-			if (unique_index_buffers.find(mesh->tri_vertex_indices) != unique_index_buffers.end())
+			if (unique_index_buffers.find(&mesh->triangles[0].a) != unique_index_buffers.end())
 			{
-				index_buffer = unique_index_buffers.find(mesh->tri_vertex_indices)->second;
+				index_buffer = unique_index_buffers.find(&mesh->triangles[0].a)->second;
 			}
 			else
 			{
-				index_buffer = new Buffer<int3>(mesh->num_triangles, RTP_BUFFER_TYPE_CUDA_LINEAR);
-				cudaMemcpy(index_buffer->ptr(), mesh->tri_vertex_indices, index_buffer->size_in_bytes(), cudaMemcpyHostToDevice);
-				unique_index_buffers[mesh->tri_vertex_indices] = index_buffer;
+				index_buffer = new Buffer<int3>(mesh->triangles.size(), RTP_BUFFER_TYPE_CUDA_LINEAR);
+				cudaMemcpy(index_buffer->ptr(), &mesh->triangles[0].a, index_buffer->size_in_bytes(), cudaMemcpyHostToDevice);
+				unique_index_buffers[&mesh->triangles[0].a] = index_buffer;
 				allocated_index_buffers.push_back(index_buffer);
 			}
 
@@ -186,7 +186,7 @@ void bake::ao_optix_prime(
 	// Normalize
 	for (size_t i = 0; i < ao_samples.num_samples; ++i)
 	{
-		ao_values[i] = 1.0f - ao_values[i] / rays_per_sample;
+		ao_values[i] = 1.0f - ao_values[i] / float(rays_per_sample);
 	}
 
 	// Clean up Buffer pointers. Could be avoided with unique_ptr.
