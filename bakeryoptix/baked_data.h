@@ -12,7 +12,14 @@ namespace bake {
 	struct Mesh;
 }
 
-typedef std::vector<float2> baked_data_mesh;
+typedef std::vector<float2> baked_data_mesh_set;
+
+struct baked_data_mesh
+{
+	// And each set consists of primary and secondary AO for smooth transition.
+	baked_data_mesh_set main_set;
+	baked_data_mesh_set alternative_set;
+};
 
 struct save_params
 {
@@ -30,9 +37,10 @@ struct baked_data
 	void save(const utils::path& destination, const save_params& params, bool store_secondary_set) const;
 	void replace(const baked_data& b);
 	void replace_primary(const baked_data& b);
-	void max(const baked_data& b, float mult_b = 1.f);
-	void average(const baked_data& b, float mult_b, float mult_base);
+	void max(const baked_data& b, float mult_b = 1.f, const std::vector<std::shared_ptr<bake::Mesh>>& inverse = {});
+	void average(const baked_data& b, float mult_b, float mult_base, const std::vector<std::shared_ptr<bake::Mesh>>& inverse = {});
 	void extend(const baked_data& b);
+	void set_alternative_set(const baked_data& b);
 	void fill(const std::shared_ptr<bake::Mesh>& mesh, float x);
 };
 

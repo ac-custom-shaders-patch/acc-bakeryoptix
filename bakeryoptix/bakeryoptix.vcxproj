@@ -168,12 +168,12 @@
     <ClCompile Include="utils\binary_reader.cpp" />
     <ClCompile Include="utils\filesystem.cpp" />
     <ClCompile Include="utils\ini_file.cpp" />
+    <ClCompile Include="utils\load_util.cpp" />
     <ClCompile Include="utils\miniz\miniz.c" />
     <ClCompile Include="utils\miniz\minizpp.cpp" />
     <ClCompile Include="utils\std_ext.cpp" />
     <ClCompile Include="utils\variant.cpp" />
     <ClCompile Include="main.cpp" />
-    <ClCompile Include="utils\load_scene.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="baked_data.h" />
@@ -444,8 +444,7 @@
     <ClInclude Include="utils\filesystem.h" />
     <ClInclude Include="utils\half.h" />
     <ClInclude Include="utils\ini_file.h" />
-    <ClInclude Include="utils\load_scene.h" />
-    <ClInclude Include="utils\load_scene_util.h" />
+    <ClInclude Include="utils\load_util.h" />
     <ClInclude Include="utils\miniz\miniz.h" />
     <ClInclude Include="utils\miniz\minizpp.h" />
     <ClInclude Include="utils\std_ext.h" />
@@ -455,6 +454,7 @@
     <ClInclude Include="platform.h" />
     <ClInclude Include="cuda\preprocessor.h" />
     <ClInclude Include="cuda\random.h" />
+    <ClInclude Include="utils\vector_operations.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

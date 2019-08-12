@@ -135,6 +135,7 @@ namespace bake
 
 	struct Mesh : NodeBase
 	{
+		Vec3 signature_point;
 		std::vector<Vec3> vertices;
 		std::vector<Vec3> normals;
 		std::vector<Triangle> triangles;
@@ -160,6 +161,9 @@ namespace bake
 		NodeTransformation tranform = NodeTransformation::identity();
 		std::shared_ptr<Node> node{};
 
+		Bone()
+		{ }
+
 		Bone(std::string name, const NodeTransformation& matrix = NodeTransformation::identity())
 			: name(std::move(name)), tranform(matrix)
 		{ }
@@ -170,149 +174,35 @@ namespace bake
 	struct SkinnedMesh : Mesh
 	{
 		std::vector<Bone> bones;
-		std::vector<Vec4> bone_ids;
 		std::vector<Vec4> weights;
+		std::vector<Vec4> bone_ids;
+		std::vector<Vec3> vertices_orig;
+		std::vector<Vec3> normals_orig;
+		void resolve(const Node* node);
 	};
 
 	struct Node : NodeBase
 	{
-		Node(const std::string& name, const NodeTransformation& matrix = NodeTransformation::identity())
-			: matrix_local(matrix), matrix_local_orig(matrix)
-		{
-			this->name = name;
-		}
-
-		std::shared_ptr<Mesh> find_mesh(const std::string& name)
-		{
-			for (const auto& c : children)
-			{
-				auto n = std::dynamic_pointer_cast<Node>(c);
-				if (n)
-				{
-					auto found = n->find_mesh(name);
-					if (found)
-					{
-						return found;
-					}
-				}
-				else
-				{
-					auto m = std::dynamic_pointer_cast<Mesh>(c);
-					if (m && m->matches(name))
-					{
-						return m;
-					}
-				}
-			}
-			return nullptr;
-		}
-
-		std::vector<std::shared_ptr<Mesh>> find_meshes(const std::vector<std::string>& names)
-		{
-			std::vector<std::shared_ptr<Mesh>> result;
-			for (const auto& name : names)
-			{
-				auto mesh = find_mesh(name);
-				if (mesh)
-				{
-					result.push_back(mesh);
-				}
-			}
-			return result;
-		}
-
-		std::shared_ptr<Node> find_node(const std::string& name)
-		{
-			for (const auto& c : children)
-			{
-				auto n = std::dynamic_pointer_cast<Node>(c);
-				if (n)
-				{
-					auto found = n->name == name ? n : n->find_node(name);
-					if (found)
-					{
-						return found;
-					}
-
-					// If Mesh matches, returns its parent
-					for (const auto& nc : n->children)
-					{
-						auto m = std::dynamic_pointer_cast<Mesh>(nc);
-						if (m && m->matches(name))
-						{
-							return n;
-						}
-					}
-				}
-			}
-			return nullptr;
-		}
-
-		std::vector<std::shared_ptr<Node>> find_nodes(const std::vector<std::string>& names)
-		{
-			std::vector<std::shared_ptr<Node>> result;
-			for (const auto& name : names)
-			{
-				auto node = find_node(name);
-				if (node)
-				{
-					result.push_back(node);
-				}
-			}
-			return result;
-		}
-
-		bool set_active(const std::vector<std::string>& names, const bool value)
-		{
-			auto any = false;
-			for (const auto& n : find_nodes(names))
-			{
-				n->active_local = value;
-				any = true;
-			}
-			for (const auto& n : find_meshes(names))
-			{
-				n->active_local = value;
-				any = true;
-			}
-			return any;
-		}
-
-		void add_child(const std::shared_ptr<NodeBase>& node)
-		{
-			if (!node) return;
-			children.push_back(node);
-			node->parent = this;
-		}
+		Node(const std::string& name, const NodeTransformation& matrix = NodeTransformation::identity());
+		std::shared_ptr<Mesh> find_mesh(const std::string& name);
+		std::vector<std::shared_ptr<Mesh>> find_meshes(const std::vector<std::string>& names);
+		std::vector<std::shared_ptr<Mesh>> find_any_meshes(const std::vector<std::string>& names);
+		std::shared_ptr<Node> find_node(const std::string& name) const;
+		std::vector<std::shared_ptr<Node>> find_nodes(const std::vector<std::string>& names);
+		bool set_active(const std::vector<std::string>& names, const bool value);
+		void add_child(const std::shared_ptr<NodeBase>& node);
 
 		NodeTransformation matrix_local;
 		NodeTransformation matrix_local_orig;
 		std::vector<std::shared_ptr<NodeBase>> children;
 
-		std::vector<std::shared_ptr<Mesh>> get_meshes()
-		{
-			std::vector<std::shared_ptr<Mesh>> result;
-			flatten(result);
-			return result;
-		}
-
-		void flatten(std::vector<std::shared_ptr<Mesh>>& list)
-		{
-			for (const auto& c : children)
-			{
-				auto m = std::dynamic_pointer_cast<Mesh>(c);
-				if (m)
-				{
-					list.push_back(m);
-				}
-				else
-				{
-					std::dynamic_pointer_cast<Node>(c)->flatten(list);
-				}
-			}
-		}
-
+		std::vector<std::shared_ptr<Mesh>> get_meshes();
+		void flatten(std::vector<std::shared_ptr<Mesh>>& list);
 		void update_matrix() override;
+		void resolve_skinned();
+
+	private:
+		void resolve_skinned(const Node* root);
 	};
 
 	struct NodeTransition

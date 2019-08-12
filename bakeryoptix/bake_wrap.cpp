@@ -3,7 +3,7 @@
 #include <cassert>
 
 #include <utils/perf_moment.h>
-#include <utils/load_scene_util.h>
+#include <utils/load_util.h>
 #include <bake_ao_optix_prime.h>
 #include <bake_api.h>
 #include <bake_sample.h>
@@ -180,12 +180,12 @@ baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene, cons
 	for (auto i = 0U; i < scene->receivers.size(); i++)
 	{
 		auto& m = scene->receivers[i];
-		baked_data_mesh v(m->vertices.size());
+		baked_data_mesh_set v(m->vertices.size());
 		for (auto j = 0U; j < m->vertices.size(); j++)
 		{
 			v[j].x = v[j].y = vertex_ao[i][j];
 		}
-		result.entries[scene->receivers[i]] = v;
+		result.entries[scene->receivers[i]].main_set = v;
 	}
 
 	// Releasing some crap

@@ -54,13 +54,13 @@
     <ClCompile Include="utils\ini_file.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="utils\load_scene.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="utils\std_ext.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="utils\variant.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\load_util.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -872,12 +872,6 @@
     <ClInclude Include="utils\ini_file.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="utils\load_scene.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="utils\load_scene_util.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="utils\std_ext.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -900,6 +894,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="utils\dbg_output.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\load_util.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\vector_operations.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
