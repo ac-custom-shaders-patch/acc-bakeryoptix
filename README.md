@@ -6,4 +6,4 @@ of Custom Shaders Patch to work).
 To run it on CPU, open `baked_shadow_params.ini` and set `CPU_ONLY = 1`, although at least on my PC with GTX 1060 it runs about 
 100 times faster with hardware acceleration.
 
-Still in development, so don’t bake too much stuff. Let’s make sure it works all right first, so we won’t have to rebake everything.
+More detailed description and proper documentation are coming soon.
