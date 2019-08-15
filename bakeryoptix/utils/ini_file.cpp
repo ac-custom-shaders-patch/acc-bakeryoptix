@@ -7,6 +7,7 @@
 
 #include <utils/std_ext.h>
 #include <fstream>
+#include <utils/alphanum.h>
 
 namespace utils
 {
@@ -658,7 +659,28 @@ namespace utils
 		save();
 	}
 
-	std::vector<std::string> ini_file::iterate(const std::string& prefix, bool no_postfix_for_first, int start_with) const
+	void sort_alphanum(std::vector<std::string>& list)
+	{
+		std::sort(list.begin(), list.end(), [](const std::string& a, const std::string& b) { return doj::alphanum_comp(a, b) < 0; });
+	}
+
+	std::vector<std::string> ini_file::iterate_nobreak(const std::string& prefix) const
+	{
+		std::vector<std::string> result;
+		const auto& p = prefix + "_";
+		const auto& p_size = p.size();
+		for (const auto& s : sections)
+		{
+			if (s.first.find(p) == 0 && isdigit(s.first[p_size]) && s.first[s.first.size() - 1] != '_')
+			{
+				result.push_back(s.first);
+			}
+		}
+		sort_alphanum(result);
+		return result;
+	}
+
+	std::vector<std::string> ini_file::iterate_break(const std::string& prefix, bool no_postfix_for_first, int start_with) const
 	{
 		std::vector<std::string> result;
 		for (int index = start_with, stop = (int)sections.size(); stop > 0; stop--, index++)

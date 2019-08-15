@@ -35,19 +35,25 @@
 #include <cuda/buffer.h>
 #include <optixu/optixu_matrix_namespace.h>
 #include <optix_prime/optix_primepp.h>
+#include <bake_kernels__cpu.h>
+#include <chrono>
+#include <utils/cout_progress.h>
 
 using namespace optix;
-using namespace optix::prime;
+using namespace prime;
 
 namespace
 {
 	void create_instances(Context& context,
-		const std::vector<bake::Mesh*> meshes,
+		const std::vector<bake::Mesh*>& meshes,
+		const bool use_cuda,
 		// output, to keep allocations around
-		std::vector<Buffer<float3>*>& allocated_vertex_buffers,
-		std::vector<Buffer<int3>*>& allocated_index_buffers,
-		std::vector<Model>& models, std::vector<RTPmodel>& prime_instances, std::vector<optix::Matrix4x4>& transforms)
+		std::vector<Buffer<float3>*>& allocated_vertex_buffers, std::vector<Buffer<int3>*>& allocated_index_buffers,
+		std::vector<Model>& models, std::vector<RTPmodel>& prime_instances, std::vector<Matrix4x4>& transforms)
 	{
+		const auto buffer_type = use_cuda ? RTP_BUFFER_TYPE_CUDA_LINEAR : RTP_BUFFER_TYPE_HOST;
+		const auto copy_type = use_cuda ? cudaMemcpyHostToDevice : cudaMemcpyHostToHost;
+
 		// For sharing identical buffers between Models
 		std::map<float*, Buffer<float3>*> unique_vertex_buffers;
 		std::map<unsigned int*, Buffer<int3>*> unique_index_buffers;
@@ -67,8 +73,8 @@ namespace
 			else
 			{
 				// Note: copy disabled for Buffer, so need pointer here
-				vertex_buffer = new Buffer<float3>(mesh->vertices.size(), RTP_BUFFER_TYPE_CUDA_LINEAR, UNLOCKED);
-				cudaMemcpy(vertex_buffer->ptr(), &mesh->vertices[0].x, vertex_buffer->size_in_bytes(), cudaMemcpyHostToDevice);
+				vertex_buffer = new Buffer<float3>(mesh->vertices.size(), buffer_type, UNLOCKED);
+				cudaMemcpy(vertex_buffer->ptr(), &mesh->vertices[0].x, vertex_buffer->size_in_bytes(), copy_type);
 				unique_vertex_buffers[&mesh->vertices[0].x] = vertex_buffer;
 				allocated_vertex_buffers.push_back(vertex_buffer);
 			}
@@ -80,8 +86,8 @@ namespace
 			}
 			else
 			{
-				index_buffer = new Buffer<int3>(mesh->triangles.size(), RTP_BUFFER_TYPE_CUDA_LINEAR);
-				cudaMemcpy(index_buffer->ptr(), &mesh->triangles[0].a, index_buffer->size_in_bytes(), cudaMemcpyHostToDevice);
+				index_buffer = new Buffer<int3>(mesh->triangles.size(), buffer_type);
+				cudaMemcpy(index_buffer->ptr(), &mesh->triangles[0].a, index_buffer->size_in_bytes(), copy_type);
 				unique_index_buffers[&mesh->triangles[0].a] = index_buffer;
 				allocated_index_buffers.push_back(index_buffer);
 			}
@@ -108,6 +114,30 @@ namespace
 	{
 		return (x + y - 1) / y;
 	}
+
+	void generate_rays(bool use_cuda, unsigned seed, int i, int j, int sqrt_passes, float scene_offset, const bake::AOSamples& ao_samples, Buffer<bake::Ray>& rays)
+	{
+		if (use_cuda)
+		{
+			generate_rays_device(seed, i, j, sqrt_passes, scene_offset, ao_samples, rays.ptr());
+		}
+		else
+		{
+			generate_rays_host(seed, i, j, sqrt_passes, scene_offset, ao_samples, rays.ptr());
+		}
+	}
+
+	void update_ao(bool use_cuda, size_t num_samples, float max_distance, Buffer<float>& hits, Buffer<float>& ao)
+	{
+		if (use_cuda)
+		{
+			bake::update_ao_device(num_samples, max_distance, hits.ptr(), ao.ptr());
+		}
+		else
+		{
+			bake::update_ao_host(num_samples, max_distance, hits.ptr(), ao.ptr());
+		}
+	}
 }
 
 void bake::ao_optix_prime(
@@ -125,10 +155,10 @@ void bake::ao_optix_prime(
 
 	std::vector<Model> models;
 	std::vector<RTPmodel> prime_instances;
-	std::vector<optix::Matrix4x4> transforms;
+	std::vector<Matrix4x4> transforms;
 	std::vector<Buffer<float3>*> allocated_vertex_buffers;
 	std::vector<Buffer<int3>*> allocated_index_buffers;
-	create_instances(ctx, blockers, allocated_vertex_buffers, allocated_index_buffers, models, prime_instances, transforms);
+	create_instances(ctx, blockers, use_cuda, allocated_vertex_buffers, allocated_index_buffers, models, prime_instances, transforms);
 
 	auto scene_model = ctx->createModel();
 	scene_model->setInstances(prime_instances.size(), RTP_BUFFER_TYPE_HOST, &prime_instances[0],
@@ -143,19 +173,25 @@ void bake::ao_optix_prime(
 	const size_t batch_size = 2000000; // Note: fits on GTX 750 (1 GB) along with Hunter model
 	const auto num_batches = std::max(idiv_ceil(ao_samples.num_samples, batch_size), size_t(1));
 	const auto scene_scale = std::max(std::max(bbox_max[0] - bbox_min[0], bbox_max[1] - bbox_min[1]), bbox_max[2] - bbox_min[2]);
+
+	cout_progress progress{num_batches * sqrt_rays_per_sample * sqrt_rays_per_sample};
+	progress.report();
+
 	for (size_t batch_idx = 0; batch_idx < num_batches; batch_idx++, seed++)
 	{
 		const auto sample_offset = batch_idx * batch_size;
 		const auto num_samples = std::min(batch_size, ao_samples.num_samples - sample_offset);
 
 		// Copy all necessary data to device
-		Buffer<float3> sample_normals(num_samples, RTP_BUFFER_TYPE_CUDA_LINEAR);
-		Buffer<float3> sample_face_normals(num_samples, RTP_BUFFER_TYPE_CUDA_LINEAR);
-		Buffer<float3> sample_positions(num_samples, RTP_BUFFER_TYPE_CUDA_LINEAR);
+		const auto buffer_type = use_cuda ? RTP_BUFFER_TYPE_CUDA_LINEAR : RTP_BUFFER_TYPE_HOST;
+		const auto copy_type = use_cuda ? cudaMemcpyHostToDevice : cudaMemcpyHostToHost;
+		Buffer<float3> sample_normals(num_samples, buffer_type);
+		Buffer<float3> sample_face_normals(num_samples, buffer_type);
+		Buffer<float3> sample_positions(num_samples, buffer_type);
 
-		cudaMemcpy(sample_normals.ptr(), ao_samples.sample_normals + 3 * sample_offset, sample_normals.size_in_bytes(), cudaMemcpyHostToDevice);
-		cudaMemcpy(sample_face_normals.ptr(), ao_samples.sample_face_normals + 3 * sample_offset, sample_face_normals.size_in_bytes(), cudaMemcpyHostToDevice);
-		cudaMemcpy(sample_positions.ptr(), ao_samples.sample_positions + 3 * sample_offset, sample_positions.size_in_bytes(), cudaMemcpyHostToDevice);
+		cudaMemcpy(sample_normals.ptr(), ao_samples.sample_normals + 3 * sample_offset, sample_normals.size_in_bytes(), copy_type);
+		cudaMemcpy(sample_face_normals.ptr(), ao_samples.sample_face_normals + 3 * sample_offset, sample_face_normals.size_in_bytes(), copy_type);
+		cudaMemcpy(sample_positions.ptr(), ao_samples.sample_positions + 3 * sample_offset, sample_positions.size_in_bytes(), copy_type);
 		AOSamples ao_samples_device{};
 		ao_samples_device.num_samples = num_samples;
 		ao_samples_device.sample_normals = reinterpret_cast<float*>(sample_normals.ptr());
@@ -163,9 +199,9 @@ void bake::ao_optix_prime(
 		ao_samples_device.sample_positions = reinterpret_cast<float*>(sample_positions.ptr());
 		ao_samples_device.sample_infos = nullptr;
 
-		Buffer<float> hits(num_samples, RTP_BUFFER_TYPE_CUDA_LINEAR);
-		Buffer<Ray> rays(num_samples, RTP_BUFFER_TYPE_CUDA_LINEAR);
-		Buffer<float> ao(num_samples, RTP_BUFFER_TYPE_CUDA_LINEAR);
+		Buffer<float> hits(num_samples, buffer_type);
+		Buffer<Ray> rays(num_samples, buffer_type);
+		Buffer<float> ao(num_samples, buffer_type);
 		cudaMemset(ao.ptr(), 0, ao.size_in_bytes());
 
 		query->setRays(rays.count(), Ray::format, rays.type(), rays.ptr());
@@ -174,13 +210,14 @@ void bake::ao_optix_prime(
 		for (auto i = 0; i < sqrt_rays_per_sample; ++i)
 			for (auto j = 0; j < sqrt_rays_per_sample; ++j)
 			{
-				generate_rays_device(seed, i, j, sqrt_rays_per_sample, scene_offset_scale, ao_samples_device, rays.ptr());
+				generate_rays(use_cuda, seed, i, j, sqrt_rays_per_sample, scene_offset_scale, ao_samples_device, rays);
 				query->execute(0);
-				update_ao_device(int(num_samples), scene_maxdistance_scale * scene_scale, hits.ptr(), ao.ptr());
+				update_ao(use_cuda, num_samples, scene_maxdistance_scale * scene_scale, hits, ao);
+				progress.report();
 			}
 
 		// Copy AO to ao_values
-		cudaMemcpy(&ao_values[sample_offset], ao.ptr(), ao.size_in_bytes(), cudaMemcpyDeviceToHost);
+		cudaMemcpy(&ao_values[sample_offset], ao.ptr(), ao.size_in_bytes(), use_cuda ? cudaMemcpyDeviceToHost : cudaMemcpyHostToHost);
 	}
 
 	// Normalize

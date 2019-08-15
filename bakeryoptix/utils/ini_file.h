@@ -157,7 +157,8 @@ namespace utils
 		std::unordered_map<std::string, section> sections;
 		path filename;
 
-		std::vector<std::string> iterate(const std::string& prefix, bool no_postfix_for_first = false, int start_with = 0) const;
+		std::vector<std::string> iterate_nobreak(const std::string& prefix) const;
+		std::vector<std::string> iterate_break(const std::string& prefix, bool no_postfix_for_first = false, int start_with = 0) const;
 
 		/*class it_sections
 		{

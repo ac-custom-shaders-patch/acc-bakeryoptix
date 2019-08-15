@@ -225,13 +225,15 @@ void SkinnedMesh::resolve(const Node* node)
 	{
 		auto& b = bones[i];
 		b.node = node->find_node(b.name);
-		if (!b.node)
+		if (b.node)
+		{
+			bones_[i] = to_matrix(b.node->matrix * b.tranform).transpose();
+		}
+		else
 		{
 			std::cerr << "Node for bone is missing: `" << b.name << "` (mesh: `" << name << "`)" << std::endl;
-			exit(3);
+			bones_[i] = to_matrix(b.tranform).transpose();
 		}
-
-		bones_[i] = to_matrix(b.node->matrix * b.tranform).transpose();
 	}
 
 	for (auto i = 0U; i < vertices.size(); i++)
@@ -271,17 +273,37 @@ std::shared_ptr<Mesh> Node::find_mesh(const std::string& name)
 	return nullptr;
 }
 
+static void find_meshes_inner(Node* node, std::vector<std::shared_ptr<Mesh>>& result, const std::vector<std::string>& names)
+{
+	for (const auto& c : node->children)
+	{
+		auto n = std::dynamic_pointer_cast<Node>(c);
+		if (n)
+		{
+			find_meshes_inner(n.get(), result, names);
+		}
+		else
+		{
+			auto m = std::dynamic_pointer_cast<Mesh>(c);
+			if (m)
+			{
+				for (const auto& name : names)
+				{
+					if (m && m->matches(name))
+					{
+						result.push_back(m);
+						break;
+					}
+				}
+			}
+		}
+	}
+}
+
 std::vector<std::shared_ptr<Mesh>> Node::find_meshes(const std::vector<std::string>& names)
 {
 	std::vector<std::shared_ptr<Mesh>> result;
-	for (const auto& name : names)
-	{
-		auto mesh = find_mesh(name);
-		if (mesh)
-		{
-			result.push_back(mesh);
-		}
-	}
+	find_meshes_inner(this, result, names);
 	return result;
 }
 
@@ -302,7 +324,7 @@ std::shared_ptr<Node> Node::find_node(const std::string& name) const
 		auto n = std::dynamic_pointer_cast<Node>(c);
 		if (n)
 		{
-			auto found = n->name == name ? n : n->find_node(name);
+			auto found = std_ext::match(name, n->name) ? n : n->find_node(name);
 			if (found)
 			{
 				return found;
@@ -322,17 +344,39 @@ std::shared_ptr<Node> Node::find_node(const std::string& name) const
 	return nullptr;
 }
 
+static void find_nodes_inner(Node* node, std::vector<std::shared_ptr<Node>>& result, const std::vector<std::string>& names)
+{
+	for (const auto& c : node->children)
+	{
+		auto n = std::dynamic_pointer_cast<Node>(c);
+		if (n)
+		{
+			for (const auto& name : names)
+			{
+				if (std_ext::match(name, n->name))
+				{
+					result.push_back(n);
+				}
+
+				// If Mesh matches, returns its parent
+				for (const auto& nc : n->children)
+				{
+					const auto m = std::dynamic_pointer_cast<Mesh>(nc);
+					if (m && m->matches(name))
+					{
+						result.push_back(n);
+					}
+				}
+			}
+			find_nodes_inner(n.get(), result, names);
+		}
+	}
+}
+
 std::vector<std::shared_ptr<Node>> Node::find_nodes(const std::vector<std::string>& names)
 {
 	std::vector<std::shared_ptr<Node>> result;
-	for (const auto& name : names)
-	{
-		auto node = find_node(name);
-		if (node)
-		{
-			result.push_back(node);
-		}
-	}
+	find_nodes_inner(this, result, names);
 	return result;
 }
 
@@ -427,12 +471,14 @@ NodeTransformation lerp_tranformation(const NodeTransformation& a, const NodeTra
 	return result;
 }
 
-void NodeTransition::apply(float progress) const
+bool NodeTransition::apply(float progress) const
 {
+	if (!node) return false;
 	progress = clamp(progress, 0.f, 1.f);
 
 	const auto frame_prev = uint(floorf((float(frames.size()) - 1.f) * progress));
 	const auto frame_next = uint(ceilf((float(frames.size()) - 1.f) * progress));
+	const auto prev = node->matrix_local;
 	if (frame_next == frame_prev)
 	{
 		node->matrix_local = frames[frame_next];
@@ -442,14 +488,53 @@ void NodeTransition::apply(float progress) const
 		const auto mix = clamp((float(frames.size()) - 1.f) * progress - frame_prev, 0.f, 1.f);
 		node->matrix_local = lerp_tranformation(frames[frame_prev], frames[frame_next], mix);
 	}
+	return prev != node->matrix_local;
 }
 
-void Animation::apply(float progress) const
+void Animation::init(const std::shared_ptr<Node>& root)
 {
+	if (!root) return;
+	if (last_root_ != root.get())
+	{
+		for (auto& e : entries)
+		{
+			e.node = root->find_node(e.name);
+		}
+		last_root_ = root.get();
+	}
+}
+
+bool Animation::apply(const std::shared_ptr<Node>& root, float progress)
+{
+	if (!root) return false;
+	init(root);
+	auto ret = false;
 	for (const auto& e : entries)
 	{
-		e.apply(progress);
+		if (e.apply(progress))
+		{
+			ret = true;
+		}
 	}
+	return ret;
+}
+
+bool Animation::apply_all(const std::shared_ptr<Node>& root, const std::vector<std::shared_ptr<bake::Animation>>& animations, float progress)
+{
+	auto ret = false;
+	for (auto a : animations)
+	{
+		if (a->apply(root, progress))
+		{
+			ret = true;
+		}
+	}
+	if (ret)
+	{
+		root->update_matrix();
+		root->resolve_skinned();
+	}
+	return ret;
 }
 
 Scene::Scene(const std::shared_ptr<Node>& root) : Scene(root ? std::vector<std::shared_ptr<Node>>{root} : std::vector<std::shared_ptr<Node>>{}) {}

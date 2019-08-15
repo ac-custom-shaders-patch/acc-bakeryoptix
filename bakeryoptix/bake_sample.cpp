@@ -36,6 +36,7 @@
 #include <optixu/optixu_matrix_namespace.h>
 #include <cuda/random.h>
 #include <assert.h>
+#include <utils/cout_progress.h>
 
 using namespace optix;
 
@@ -68,14 +69,17 @@ float3 operator*(const Matrix4x4& mat, const float3& v)
 }
 
 void sample_triangle(const Matrix4x4& xform, const Matrix4x4& xform_invtrans, const float3** verts, const float3** normals,
-	const size_t tri_idx, const size_t tri_sample_count, const double tri_area, const unsigned base_seed,
-	float3* sample_positions, float3* sample_norms, float3* sample_face_norms, bake::SampleInfo* sample_infos)
+	const size_t tri_idx, const size_t tri_sample_count, const double tri_area, const unsigned base_seed, const float extra_offset,
+	const bool missing_normals_up, float3* sample_positions, float3* sample_norms, float3* sample_face_norms, bake::SampleInfo* sample_infos)
 {
 	const auto& v0 = *verts[0];
 	const auto& v1 = *verts[1];
 	const auto& v2 = *verts[2];
 
-	const auto face_normal = normalize(cross(v1 - v0, v2 - v0));
+	const auto face_normal = !normals && missing_normals_up
+		? float3{0.f, 1.f, 0.f}
+		: normalize(cross(v1 - v0, v2 - v0));
+
 	float3 n0, n1, n2;
 	if (normals)
 	{
@@ -115,9 +119,9 @@ void sample_triangle(const Matrix4x4& xform, const Matrix4x4& xform_invtrans, co
 		bary.y = r2 * sqrt_r1;
 		bary.z = 1.0f - bary.x - bary.y;
 
-		sample_positions[index] = xform * (bary.x * v0 + bary.y * v1 + bary.z * v2);
 		sample_norms[index] = normalize(xform_invtrans * (bary.x * n0 + bary.y * n1 + bary.z * n2));
 		sample_face_norms[index] = normalize(xform_invtrans * face_normal);
+		sample_positions[index] = xform * (bary.x * v0 + bary.y * v1 + bary.z * v2) + sample_face_norms[index] * extra_offset;
 	}
 }
 
@@ -159,6 +163,8 @@ void sample_instance(
 	const Matrix4x4& xform,
 	const unsigned int seed,
 	const size_t min_samples_per_triangle,
+	const bool disable_normals,
+	const bool missing_normals_up,
 	bake::AOSamples& ao_samples)
 {
 	// Setup access to mesh data
@@ -175,9 +181,6 @@ void sample_instance(
 	const auto sample_norms = reinterpret_cast<float3*>(ao_samples.sample_normals);
 	const auto sample_face_norms = reinterpret_cast<float3*>(ao_samples.sample_face_normals);
 	const auto sample_infos = ao_samples.sample_infos;
-
-	const unsigned vertex_stride_bytes = 3 * sizeof(float);
-	const unsigned normal_stride_bytes = 3 * sizeof(float);
 
 	// Compute triangle areas
 	std::vector<double> tri_areas(mesh->triangles.size(), 0.0);
@@ -210,16 +213,14 @@ void sample_instance(
 		};
 		const float3** normals = nullptr;
 		const float3* norms[3];
-		if (!mesh->normals.empty())
+		if (!disable_normals && !mesh->normals.empty())
 		{
 			norms[0] = (float3*)&mesh->normals[tri.x];
 			norms[1] = (float3*)&mesh->normals[tri.y];
 			norms[2] = (float3*)&mesh->normals[tri.z];
 			normals = norms;
 		}
-		sample_triangle(xform, xform_invtrans, verts, normals,
-			tri_idx, tri_sample_counts[tri_idx], tri_areas[tri_idx],
-			seed,
+		sample_triangle(xform, xform_invtrans, verts, normals, tri_idx, tri_sample_counts[tri_idx], tri_areas[tri_idx], seed, mesh->extra_samples_offset, missing_normals_up,
 			sample_positions + sample_idx, sample_norms + sample_idx, sample_face_norms + sample_idx, sample_infos + sample_idx);
 		sample_idx += tri_sample_counts[tri_idx];
 	}
@@ -227,11 +228,8 @@ void sample_instance(
 	assert(sample_idx == ao_samples.num_samples);
 }
 
-void bake::sample_instances(
-	const Scene& scene,
-	const size_t* num_samples_per_instance,
-	const size_t min_samples_per_triangle,
-	AOSamples& ao_samples)
+void bake::sample_instances(const Scene& scene, const size_t* num_samples_per_instance, const size_t min_samples_per_triangle,
+	const bool disable_normals, const bool missing_normals_up, AOSamples& ao_samples)
 {
 	std::vector<size_t> sample_offsets(scene.receivers.size());
 	{
@@ -243,9 +241,12 @@ void bake::sample_instances(
 		}
 	}
 
+	cout_progress progress{scene.receivers.size() > 600 ? scene.receivers.size() : 0};
+
 	#pragma omp parallel for
 	for (ptrdiff_t i = 0; i < ptrdiff_t(scene.receivers.size()); ++i)
 	{
+		progress.report();
 		const auto sample_offset = sample_offsets[i];
 
 		// Point to samples for this instance
@@ -257,7 +258,7 @@ void bake::sample_instances(
 		instance_ao_samples.sample_infos = ao_samples.sample_infos + sample_offset;
 
 		Matrix4x4 xform(scene.receivers[i]->matrix._Elems);
-		sample_instance(scene.receivers[i].get(), xform, unsigned(i), min_samples_per_triangle, instance_ao_samples);
+		sample_instance(scene.receivers[i].get(), xform, unsigned(i), min_samples_per_triangle, disable_normals, missing_normals_up, instance_ao_samples);
 	}
 }
 

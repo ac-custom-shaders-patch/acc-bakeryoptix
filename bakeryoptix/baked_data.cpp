@@ -11,6 +11,7 @@
 #include <utils/ini_file.h>
 #include <bake_api.h>
 #include <utils/dbg_output.h>
+#include <utils/cout_progress.h>
 
 template <typename T>
 void add_bytes(std::basic_string<uint8_t>& d, const T& value)
@@ -38,12 +39,29 @@ void baked_data::save(const utils::path& destination, const save_params& params,
 	std::vector<unsigned> nearbyes;
 	std::vector<bool> averaged;
 
+	cout_progress progress{entries.size()};
 	for (const auto& entry : entries)
 	{
+		progress.report();
+
 		const auto m = entry.first;
 		auto ao = entry.second;
 
-		if (params.averaging_threshold > 0.f)
+		if (m->name == "@@__EXTRA_AO@")
+		{
+			add_string(data, m->name);
+			add_bytes(data, int(4));
+			add_bytes(data, m->signature_point);
+			add_bytes(data, int(m->vertices.size()));
+			for (auto j = 0U; j < m->vertices.size(); j++)
+			{
+				add_bytes(data, m->vertices[j]);
+				add_bytes(data, half_float::half(ao.main_set[j].x));
+			}
+			continue;
+		}
+
+		if (!m->normals.empty() && params.averaging_threshold > 0.f)
 		{
 			if (m->vertices.size() > nearbyes.size())
 			{
@@ -167,7 +185,7 @@ void baked_data::save(const utils::path& destination, const save_params& params,
 	}
 
 	remove(destination.string().c_str());
-	mz_zip_add_mem_to_archive_file_in_place(destination.string().c_str(), "Patch.data",
+	mz_zip_add_mem_to_archive_file_in_place(destination.string().c_str(), "Patch_v2.data",
 		data.c_str(), data.size(), nullptr, 0, 0);
 
 	auto config = params.extra_config;
@@ -196,7 +214,7 @@ baked_data_mesh_set replace_primary_mesh_data(const baked_data_mesh_set& b, cons
 	return result;
 }
 
-baked_data_mesh_set merge_mesh_data(const baked_data_mesh_set& b, const baked_data_mesh_set& base, float mult_b, bool use_min)
+baked_data_mesh_set merge_mesh_data(const baked_data_mesh_set& b, const baked_data_mesh_set& base, float mult_b, bool use_min, bool merge_x, bool merge_y)
 {
 	baked_data_mesh_set result;
 	if (b.size() != base.size())
@@ -207,13 +225,13 @@ baked_data_mesh_set merge_mesh_data(const baked_data_mesh_set& b, const baked_da
 	result.resize(b.size());
 	for (auto i = 0U; i < b.size(); i++)
 	{
-		result[i].x = use_min ? std::min(b[i].x * mult_b, base[i].x) : std::max(b[i].x * mult_b, base[i].x);
-		result[i].y = base[i].y;
+		result[i].x = merge_x ? (use_min ? std::min(b[i].x * mult_b, base[i].x) : std::max(b[i].x * mult_b, base[i].x)) : base[i].x;
+		result[i].y = merge_y ? (use_min ? std::min(b[i].y * mult_b, base[i].y) : std::max(b[i].y * mult_b, base[i].y)) : base[i].y;
 	}
 	return result;
 }
 
-baked_data_mesh_set average_mesh_data(const baked_data_mesh_set& b, const baked_data_mesh_set& base, float mult_b, float mult_base)
+baked_data_mesh_set average_mesh_data(const baked_data_mesh_set& b, const baked_data_mesh_set& base, float mult_b, float mult_base, bool merge_x, bool merge_y)
 {
 	baked_data_mesh_set result;
 	if (b.size() != base.size())
@@ -224,8 +242,8 @@ baked_data_mesh_set average_mesh_data(const baked_data_mesh_set& b, const baked_
 	result.resize(b.size());
 	for (auto i = 0U; i < b.size(); i++)
 	{
-		result[i].x = b[i].x * mult_b + base[i].x * mult_base;
-		result[i].y = base[i].y;
+		result[i].x = merge_x ? (b[i].x * mult_b + base[i].x * mult_base) : base[i].x;
+		result[i].y = merge_y ? (b[i].y * mult_b + base[i].y * mult_base) : base[i].y;
 	}
 	return result;
 }
@@ -241,15 +259,15 @@ void baked_data::replace_primary(const baked_data& b)
 	}
 }
 
-void baked_data::max(const baked_data& b, float mult_b, const std::vector<std::shared_ptr<bake::Mesh>>& inverse)
+void baked_data::max(const baked_data& b, float mult_b, const std::vector<std::shared_ptr<bake::Mesh>>& inverse, bool apply_to_both_sets)
 {
 	for (const auto& p : b.entries)
 	{
-		auto use_min = std::find(inverse.begin(), inverse.end(), p.first) != inverse.end();
+		const auto use_min = std::find(inverse.begin(), inverse.end(), p.first) != inverse.end();
 		auto f = entries.find(p.first);
 		entries[p.first].main_set = f == entries.end()
 			? p.second.main_set
-			: merge_mesh_data(p.second.main_set, f->second.main_set, use_min ? 1.f : mult_b, use_min);
+			: merge_mesh_data(p.second.main_set, f->second.main_set, use_min ? 1.f : mult_b, use_min, true, apply_to_both_sets);
 	}
 }
 
@@ -261,7 +279,7 @@ void baked_data::replace(const baked_data& b)
 	}
 }
 
-void baked_data::average(const baked_data& b, float mult_b, float mult_base, const std::vector<std::shared_ptr<bake::Mesh>>& inverse)
+void baked_data::average(const baked_data& b, float mult_b, float mult_base, const std::vector<std::shared_ptr<bake::Mesh>>& inverse, bool apply_to_both_sets)
 {
 	for (const auto& p : b.entries)
 	{
@@ -270,8 +288,8 @@ void baked_data::average(const baked_data& b, float mult_b, float mult_base, con
 		entries[p.first].main_set = f == entries.end()
 			? p.second.main_set
 			: use_min
-			? merge_mesh_data(p.second.main_set, f->second.main_set, 1.f, true)
-			: average_mesh_data(p.second.main_set, f->second.main_set, mult_b, mult_base);
+			? merge_mesh_data(p.second.main_set, f->second.main_set, 1.f, true, true, apply_to_both_sets)
+			: average_mesh_data(p.second.main_set, f->second.main_set, mult_b, mult_base, true, apply_to_both_sets);
 	}
 }
 

@@ -163,14 +163,17 @@
     <ClCompile Include="bake_api.cpp" />
     <ClCompile Include="bake_filter.cpp" />
     <ClCompile Include="bake_filter_least_squares.cpp" />
+    <ClCompile Include="bake_kernels__cpu.cpp" />
     <ClCompile Include="bake_sample.cpp" />
     <ClCompile Include="bake_wrap.cpp" />
+    <ClCompile Include="utils\alphanum.cpp" />
     <ClCompile Include="utils\binary_reader.cpp" />
     <ClCompile Include="utils\filesystem.cpp" />
     <ClCompile Include="utils\ini_file.cpp" />
     <ClCompile Include="utils\load_util.cpp" />
     <ClCompile Include="utils\miniz\miniz.c" />
     <ClCompile Include="utils\miniz\minizpp.cpp" />
+    <ClCompile Include="utils\cout_progress.cpp" />
     <ClCompile Include="utils\std_ext.cpp" />
     <ClCompile Include="utils\variant.cpp" />
     <ClCompile Include="main.cpp" />
@@ -182,6 +185,7 @@
     <ClInclude Include="bake_filter.h" />
     <ClInclude Include="bake_filter_least_squares.h" />
     <ClInclude Include="bake_kernels.h" />
+    <ClInclude Include="bake_kernels__cpu.h" />
     <ClInclude Include="bake_sample.h" />
     <ClInclude Include="bake_sample_internal.h" />
     <ClInclude Include="bake_util.h" />
@@ -439,6 +443,7 @@
     <ClInclude Include="eigen\Eigen\src\SVD\JacobiSVD_MKL.h" />
     <ClInclude Include="eigen\Eigen\src\SVD\UpperBidiagonalization.h" />
     <ClInclude Include="eigen\Eigen\src\UmfPackSupport\UmfPackSupport.h" />
+    <ClInclude Include="utils\alphanum.h" />
     <ClInclude Include="utils\binary_reader.h" />
     <ClInclude Include="utils\dbg_output.h" />
     <ClInclude Include="utils\filesystem.h" />
@@ -447,6 +452,7 @@
     <ClInclude Include="utils\load_util.h" />
     <ClInclude Include="utils\miniz\miniz.h" />
     <ClInclude Include="utils\miniz\minizpp.h" />
+    <ClInclude Include="utils\cout_progress.h" />
     <ClInclude Include="utils\std_ext.h" />
     <ClInclude Include="utils\string_codecvt.h" />
     <ClInclude Include="utils\variant.h" />

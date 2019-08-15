@@ -29,6 +29,7 @@
 #include <bake_api.h>
 #include <vector>
 #include <optixu/optixu_math_namespace.h>
+#include <utils/cout_progress.h>
 
 using namespace optix;
 
@@ -90,9 +91,12 @@ void bake::filter(
 		}
 	}
 
-#pragma omp parallel for
+	cout_progress progress{scene.receivers.size() > 600 ? scene.receivers.size() : 0};
+
+	#pragma omp parallel for
 	for (ptrdiff_t i = 0; i < ptrdiff_t(scene.receivers.size()); ++i)
 	{
+		progress.report();
 		const auto sample_offset = sample_offset_per_instance[i];
 
 		// Point to samples for this instance

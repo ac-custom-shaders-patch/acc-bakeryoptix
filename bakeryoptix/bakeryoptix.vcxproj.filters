@@ -63,6 +63,15 @@
     <ClCompile Include="utils\load_util.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="bake_kernels__cpu.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\cout_progress.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\alphanum.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="bake_ao_optix_prime.h">
@@ -900,6 +909,15 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="utils\vector_operations.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="bake_kernels__cpu.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\cout_progress.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\alphanum.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

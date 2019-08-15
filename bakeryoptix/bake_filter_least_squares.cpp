@@ -43,6 +43,7 @@
 #include <eigen/Geometry>
 #include <eigen/SparseCholesky>
 #include <assert.h>
+#include <utils/cout_progress.h>
 
 using namespace optix;
 
@@ -96,7 +97,7 @@ namespace
 		if (normalize)
 		{
 			det = -double(p[0](1)) * p[1](0) + double(p[0](0)) * p[1](1) + double(p[0](1)) * p[2](0)
-					- double(p[1](1)) * p[2](0) - double(p[0](0)) * p[2](1) + double(p[1](0)) * p[2](1);
+				- double(p[1](1)) * p[2](0) - double(p[0](0)) * p[2](1) + double(p[1](0)) * p[2](1);
 			const auto eps = 0.0;
 			if (fabs(det) <= eps)
 			{
@@ -270,7 +271,7 @@ namespace
 		float* vertex_ao)
 	{
 		std::fill(vertex_ao, vertex_ao + mesh->vertices.size(), 0.0f);
-		
+
 		std::vector<triplet> triplets;
 		triplets.reserve(ao_samples.num_samples * 9);
 		const int3* tri_vertex_indices = reinterpret_cast<const int3*>(&mesh->triangles[0]);
@@ -328,7 +329,7 @@ namespace
 				}
 			}
 		}
-		
+
 		Eigen::SimplicialLDLT<sparse_matrix> solver;
 
 		// Optional edge-based regularization for smoother result, see paper for details
@@ -342,7 +343,7 @@ namespace
 			solver.compute(mass_matrix);
 		}
 
-		assert( solver.info() == Eigen::Success );
+		assert(solver.info() == Eigen::Success);
 
 		Eigen::VectorXd b(mesh->vertices.size());
 		Eigen::VectorXd x(mesh->vertices.size());
@@ -354,7 +355,7 @@ namespace
 
 		x = solver.solve(b);
 
-		assert( solver.info() == Eigen::Success ); // for debug build
+		assert(solver.info() == Eigen::Success); // for debug build
 		if (solver.info() == Eigen::Success)
 		{
 			for (size_t k = 0; k < mesh->vertices.size(); ++k)
@@ -383,9 +384,13 @@ void bake::filter_least_squares(
 		}
 	}
 
-#pragma omp parallel for
+	cout_progress progress{scene.receivers.size() > 600 ? scene.receivers.size() : 0};
+
+	#pragma omp parallel for
 	for (ptrdiff_t mesh_idx = 0; mesh_idx < ptrdiff_t(scene.receivers.size()); mesh_idx++)
 	{
+		progress.report();
+
 		// Build reg. matrix once, it does not depend on rigid xform per instance
 		sparse_matrix regularization_matrix;
 		if (regularization_weight > 0.0f)
@@ -394,7 +399,7 @@ void bake::filter_least_squares(
 		}
 
 		// Filter all the instances that point to this mesh
-#pragma omp parallel for
+		#pragma omp parallel for
 		for (ptrdiff_t i = 0; i < ptrdiff_t(scene.receivers.size()); i++)
 		{
 			if (i == mesh_idx)

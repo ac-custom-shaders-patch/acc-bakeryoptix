@@ -37,8 +37,8 @@ struct baked_data
 	void save(const utils::path& destination, const save_params& params, bool store_secondary_set) const;
 	void replace(const baked_data& b);
 	void replace_primary(const baked_data& b);
-	void max(const baked_data& b, float mult_b = 1.f, const std::vector<std::shared_ptr<bake::Mesh>>& inverse = {});
-	void average(const baked_data& b, float mult_b, float mult_base, const std::vector<std::shared_ptr<bake::Mesh>>& inverse = {});
+	void max(const baked_data& b, float mult_b = 1.f, const std::vector<std::shared_ptr<bake::Mesh>>& inverse = {}, bool apply_to_both_sets = false);
+	void average(const baked_data& b, float mult_b, float mult_base, const std::vector<std::shared_ptr<bake::Mesh>>& inverse = {}, bool apply_to_both_sets = false);
 	void extend(const baked_data& b);
 	void set_alternative_set(const baked_data& b);
 	void fill(const std::shared_ptr<bake::Mesh>& mesh, float x);

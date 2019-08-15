@@ -31,6 +31,6 @@
 namespace bake
 {
 	struct AOSamples;
-	void generate_rays_device(unsigned int seed, int px, int py, int sqrt_passes, float scene_scale, const AOSamples& ao_samples, Ray* rays);
-	void update_ao_device(int num_samples, float maxdistance, const float* hits, float* ao);
+	void generate_rays_device(unsigned int seed, int px, int py, int sqrt_passes, float scene_offset, const AOSamples& ao_samples, Ray* rays);
+	void update_ao_device(size_t num_samples, float max_distance, const float* hits, float* ao);
 }

@@ -14,6 +14,20 @@ std::vector<T> operator+(const std::vector<T>& A, const std::vector<T>& B)
 }
 
 template <typename T>
+std::vector<T> operator&(const std::vector<T>& A, const std::vector<T>& B)
+{
+	std::vector<T> ret;
+	for (const auto& v : A)
+	{
+		if (std::find(B.begin(), B.end(), v) != B.end())
+		{
+			ret.push_back(v);
+		}
+	}
+	return ret;
+}
+
+template <typename T>
 std::vector<T> operator-(const std::vector<T>& A, const std::vector<T>& B)
 {
 	std::vector<T> result;
@@ -33,26 +47,32 @@ std::vector<T>& operator+=(std::vector<T>& A, const std::vector<T>& B)
 }
 
 template <typename T>
+std::vector<T>& operator|=(std::vector<T>& A, const std::vector<T>& B)
+{
+	for (const auto& v : B)
+	{
+		if (std::find(A.begin(), A.end(), v) == A.end())
+		{
+			A.push_back(v);
+		}
+	}
+	return A;
+}
+
+template <typename T>
 std::vector<T>& operator-=(std::vector<T>& A, const std::vector<T>& B)
 {
 	auto it = A.begin();
-	auto it2 = B.begin();
-	auto end = A.end();
-	auto end2 = B.end();
-	while (it != end)
+	while (it != A.end())
 	{
-		while (it2 != end2)
+		if (std::find(B.begin(), B.end(), *it) != B.end())
 		{
-			if (*it == *it2)
-			{
-				it = A.erase(it);
-				end = A.end();
-				it2 = B.begin();
-			}
-			else ++it2;
+			it = A.erase(it);
 		}
-		++it;
-		it2 = B.begin();
+		else
+		{
+			++it;
+		}
 	}
 	return A;
 }
@@ -60,12 +80,26 @@ std::vector<T>& operator-=(std::vector<T>& A, const std::vector<T>& B)
 template <class Container, class Function>
 auto apply(const Container& cont, Function fun)
 {
-	std::vector<typename
-		std::result_of<Function(const typename Container::value_type&)>::type> ret;
+	std::vector<typename std::result_of<Function(const typename Container::value_type&)>::type> ret;
 	ret.reserve(cont.size());
 	for (const auto& v : cont)
 	{
 		ret.push_back(fun(v));
+	}
+	return ret;
+}
+
+template <class Container, class Function>
+auto where(const Container& cont, Function fun)
+{
+	std::vector<typename Container::value_type> ret;
+	ret.reserve(cont.size());
+	for (const auto& v : cont)
+	{
+		if (fun(v))
+		{
+			ret.push_back(v);
+		}
 	}
 	return ret;
 }

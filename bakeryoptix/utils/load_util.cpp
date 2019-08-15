@@ -89,7 +89,8 @@ static std::shared_ptr<bake::Mesh> load_kn5__read_mesh(load_data& target, const 
 	const auto is_renderable = reader.read_bool();
 	if (!is_renderable || lod_in > 0.f)
 	{
-		return nullptr;
+		mesh->receive_shadows = false;
+		mesh->cast_shadows = false;
 	}
 
 	return mesh;
@@ -139,8 +140,8 @@ static std::shared_ptr<bake::Mesh> load_kn5__read_skinned_mesh(load_data& target
 
 	const auto material = target.materials[reader.read_uint()];
 	const auto layer = reader.read_uint();
-	const auto lod_in = reader.read_float();
-	const auto lod_out = reader.read_float();
+	mesh->lod_in = reader.read_float();
+	mesh->lod_out = reader.read_float();
 
 	if (params.exclude_blockers_alpha_test && (material->alpha_tested || material->blend == bake::MaterialBlendMode::coverage)
 		|| material->blend == bake::MaterialBlendMode::blend)
@@ -153,9 +154,9 @@ static std::shared_ptr<bake::Mesh> load_kn5__read_skinned_mesh(load_data& target
 	mesh->material = material;
 	mesh->signature_point = mesh->vertices[0];
 
-	if (lod_in > 0.f)
+	if (mesh->lod_in > 0.f)
 	{
-		return nullptr;
+		mesh->cast_shadows = false;
 	}
 
 	return mesh;
@@ -185,6 +186,7 @@ static std::shared_ptr<bake::Mesh> proc_mesh(const std::shared_ptr<bake::Mesh>& 
 				break;
 			}
 		}
+		// DBG(result->name, result->material->name, result->material->shader, result->cast_shadows, result->receive_shadows)
 	}
 	return result;
 }
@@ -236,21 +238,17 @@ static std::shared_ptr<bake::NodeBase> load_kn5__read_node(load_data& target, co
 	}
 }
 
-std::shared_ptr<bake::NodeBase> load_kn5_file(load_data& target, const utils::path& filename, const load_params& params)
+std::shared_ptr<bake::NodeBase> load_kn5_file(const utils::path& filename, const load_params& params)
 {
 	if (!exists(filename)) return nullptr;
 
 	utils::binary_reader reader(filename);
 	if (!reader.match("sc6969")) return nullptr;
 
-	// skipping header
 	const auto version = reader.read_uint();
-	// std::cout << "version: " << version << "\n";
-
 	if (version == 6) reader.read_uint();
 	if (version > 6) return nullptr;
 
-	// skipping textures
 	for (auto i = reader.read_uint(); i > 0; i--)
 	{
 		if (reader.read_uint() == 0) continue;
@@ -260,7 +258,7 @@ std::shared_ptr<bake::NodeBase> load_kn5_file(load_data& target, const utils::pa
 		reader.skip(size); // length+data
 	}
 
-	// skipping materials
+	load_data target{};
 	for (auto i = reader.read_uint(); i > 0; i--)
 	{
 		auto mat = std::make_shared<bake::Material>();
@@ -297,21 +295,20 @@ std::shared_ptr<bake::NodeBase> load_kn5_file(load_data& target, const utils::pa
 std::shared_ptr<bake::Node> load_model(const utils::path& filename, const load_params& params)
 {
 	std::string errs;
-	load_data target{};
 
 	auto p = utils::path(filename);
 	auto result = std::make_shared<bake::Node>(bake::Node(""));
 
 	if (p.string().find(".kn5") != std::string::npos)
 	{
-		result->add_child(load_kn5_file(target, p, params));
+		result->add_child(load_kn5_file(p, params));
 	}
 	else
 	{
 		const auto ini = utils::ini_file(filename);
-		for (const auto& s : ini.iterate("MODEL"))
+		for (const auto& s : ini.iterate_break("MODEL"))
 		{
-			result->add_child(load_kn5_file(target, p.parent_path() / ini.get(s, "FILE", std::string()), params));
+			result->add_child(load_kn5_file(p.parent_path() / ini.get(s, "FILE", std::string()), params));
 		}
 	}
 
@@ -349,9 +346,9 @@ Matrix4x4 rotation_quaternion(const float4& rotation)
 	return matrix.transpose();
 }
 
-bake::Animation load_ksanim(const utils::path& filename, const std::shared_ptr<bake::Node>& root, bool include_static)
+std::shared_ptr<bake::Animation> load_ksanim(const utils::path& filename, bool include_static)
 {
-	bake::Animation result;
+	std::shared_ptr<bake::Animation> result = std::make_shared<bake::Animation>();
 	if (!exists(filename)) return result;
 
 	utils::binary_reader reader(filename);
@@ -368,7 +365,7 @@ bake::Animation load_ksanim(const utils::path& filename, const std::shared_ptr<b
 		const auto name = reader.read_string();
 		const auto frames_count = reader.read_uint();
 		bake::NodeTransition entry;
-		entry.node = root->find_node(name);
+		entry.name = name;
 		entry.frames.resize(frames_count);
 		auto dif = include_static;
 
@@ -393,10 +390,67 @@ bake::Animation load_ksanim(const utils::path& filename, const std::shared_ptr<b
 			}
 		}
 
-		if (entry.node && dif)
+		if (dif)
 		{
-			result.entries.push_back(entry);
+			result->entries.push_back(entry);
 		}
+	}
+
+	return result;
+}
+
+std::vector<bake::AILanePoint> load_ailane(const utils::path& filename)
+{
+	std::vector<bake::AILanePoint> result;
+	if (!exists(filename)) return result;
+
+	utils::binary_reader reader(filename);
+	const auto version = reader.read_uint();
+	if (version != 7)
+	{
+		std::cerr << "Unsupported AI lane version: " << version << " (`" << filename.relative_ac() << "`)";
+		return result;
+	}
+
+	const auto count = reader.read_uint();
+	result.resize(count);
+
+	const auto lap_time = reader.read_uint();
+	const auto sample_count = reader.read_uint();
+
+	for (auto i = 0U; i < count; i++)
+	{
+		result[i].point = reader.read_ref<bake::Vec3>();
+		result[i].length = reader.read_float();
+		result[i].index = reader.read_uint();
+		result[i].side_left = 4.f;
+		result[i].side_right = 4.f;
+	}
+
+	const auto count_2 = reader.read_uint();
+	if (count_2 == count)
+	{
+		for (auto i = 0U; i < count; i++)
+		{
+			const auto speed = reader.read_float();
+			const auto gas = reader.read_float();
+			const auto brake = reader.read_float();
+			const auto obsoletelatg = reader.read_float();
+			const auto radius = reader.read_float();
+			result[i].side_left = reader.read_float();
+			result[i].side_right = reader.read_float();
+			const auto camber = reader.read_float();
+			const auto direction = reader.read_float();
+			const auto normal = reader.read_f3();
+			const auto length = reader.read_float();
+			const auto forwardvector = reader.read_f3();
+			const auto tag = reader.read_float();
+			const auto grade = reader.read_float();
+		}
+	}
+	else
+	{
+		std::cerr << "Trying to load AI lane: count is not equal to count_2\n";
 	}
 
 	return result;

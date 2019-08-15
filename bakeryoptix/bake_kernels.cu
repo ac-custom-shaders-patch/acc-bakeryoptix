@@ -110,9 +110,9 @@ __global__ void update_ao_kernel(int num_samples, float maxdistance, const float
 }
 
 // Precondition: ao output initialized to 0 before first pass
-__host__ void bake::update_ao_device(int num_samples, float maxdistance, const float* hits, float* ao)
+__host__ void bake::update_ao_device(size_t num_samples, float max_distance, const float* hits, float* ao)
 {
 	int block_size = 512;
 	int block_count = idiv_ceil(num_samples, block_size);
-	update_ao_kernel<<<block_count, block_size>>>(num_samples, maxdistance, hits, ao);
+	update_ao_kernel<<<block_count, block_size>>>(num_samples, max_distance, hits, ao);
 }

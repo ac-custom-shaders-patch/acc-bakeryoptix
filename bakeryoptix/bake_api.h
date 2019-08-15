@@ -34,6 +34,9 @@
 #include <memory>
 #include <utils/std_ext.h>
 
+// ReSharper disable once CppUnusedIncludeDirective
+#include <utils/dbg_output.h>
+
 namespace bake
 {
 	struct SampleInfo
@@ -64,7 +67,6 @@ namespace bake
 		virtual ~NodeBase() = default;
 		virtual void update_matrix() = 0;
 	};
-
 
 	struct MaterialProperty
 	{
@@ -136,13 +138,16 @@ namespace bake
 	struct Mesh : NodeBase
 	{
 		Vec3 signature_point;
+		float extra_samples_offset{};
 		std::vector<Vec3> vertices;
 		std::vector<Vec3> normals;
 		std::vector<Triangle> triangles;
-		bool cast_shadows;
-		bool receive_shadows;
-		bool visible;
 		std::shared_ptr<Material> material;
+		float lod_in{};
+		float lod_out{};
+		bool cast_shadows = true;
+		bool receive_shadows = true;
+		bool visible = true;
 
 		void update_matrix() override
 		{
@@ -207,15 +212,20 @@ namespace bake
 
 	struct NodeTransition
 	{
-		std::shared_ptr<Node> node;
+		std::string name;
+		std::shared_ptr<Node> node{};
 		std::vector<NodeTransformation> frames;
-		void apply(float progress) const;
+		bool apply(float progress) const;
 	};
 
 	struct Animation
 	{
 		std::vector<bake::NodeTransition> entries;
-		void apply(float progress) const;
+		void init(const std::shared_ptr<Node>& root);
+		bool apply(const std::shared_ptr<Node>& root, float progress);
+		static bool apply_all(const std::shared_ptr<Node>& root, const std::vector<std::shared_ptr<bake::Animation>>& animations, float progress);
+	private:
+		Node* last_root_{};
 	};
 
 	struct Scene
@@ -236,11 +246,20 @@ namespace bake
 		NodeTransformation matrix_local;
 		std::vector<std::shared_ptr<HierarchyNode>> children;
 
-		HierarchyNode(const std::string& name, const NodeTransformation& matrix = NodeTransformation::identity())
-			: name(name), matrix_local(matrix)
+		HierarchyNode(std::string name, const NodeTransformation& matrix = NodeTransformation::identity())
+			: name(std::move(name)), matrix_local(matrix)
 		{ }
 
 		void align(const std::shared_ptr<bake::Node>& root);
+	};
+
+	struct AILanePoint
+	{
+		Vec3 point;
+		float length;
+		uint32_t index;
+		float side_left;
+		float side_right;
 	};
 
 	struct AOSamples

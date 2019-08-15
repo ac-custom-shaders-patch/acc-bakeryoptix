@@ -59,52 +59,6 @@ struct mixing_params
 	float max_mult;
 };
 
-void bake_rotating(std::shared_ptr<bake::Node> root, baked_data& ao,
-	const std::vector<std::string>& names_x, const std::vector<std::string>& names_y, const std::vector<std::string>& names_z,
-	const bake_params& params, const float step, const mixing_params& mixing, const std::string& comment = "")
-{
-	const auto root_scene = std::make_shared<bake::Scene>(root);
-	const auto rotating_x = root->find_nodes(names_x);
-	const auto rotating_y = root->find_nodes(names_y);
-	const auto rotating_z = root->find_nodes(names_z);
-	const auto rotating = rotating_x + rotating_y + rotating_z;
-	if (rotating.empty()) return;
-
-	std::cout << "Baking rotating objects (" << rotating.size() << (comment.empty() ? " found):" : " found, " + comment + "):") << std::endl;
-	const auto iterations = int(ceilf(359.f / step));
-	for (auto i = 1; i < iterations; i++)
-	{
-		const auto deg = i * step;
-		std::cout << (i == 1 ? "\t" : "\r\t") << "Degress: " << deg << utf16_to_utf8(L"°");
-		for (const auto& n : rotating_x)
-		{
-			const auto axis = float3{1.f, 0.f, 0.f};
-			n->matrix_local = n->matrix_local_orig * bake::NodeTransformation::rotation(deg, &axis.x);
-		}
-		for (const auto& n : rotating_y)
-		{
-			const auto axis = float3{0.f, 1.f, 0.f};
-			n->matrix_local = n->matrix_local_orig * bake::NodeTransformation::rotation(deg, &axis.x);
-		}
-		for (const auto& n : rotating_z)
-		{
-			const auto axis = float3{0.f, 0.f, 1.f};
-			n->matrix_local = n->matrix_local_orig * bake::NodeTransformation::rotation(deg, &axis.x);
-		}
-		const auto baked = bake_wrap::bake_scene(std::make_shared<bake::Scene>(rotating), root_scene->blockers, params);
-		if (mixing.use_max)
-		{
-			ao.max(baked, mixing.max_mult);
-		}
-		else
-		{
-			const auto avg_mult = 1.f / float(iterations);
-			ao.average(baked, avg_mult, i == 1 ? avg_mult : 1.f);
-		}
-	}
-	std::cout << std::endl;
-}
-
 bool is_car(const utils::path& filename)
 {
 	auto parent = filename.parent_path().string();
@@ -165,20 +119,23 @@ std::vector<T> to_vector(const std::set<T>& input)
 	return r;
 }
 
-void fill_animation(utils::ini_file& config, const bake::Animation& animation, const std::string& file)
+void fill_animation(const std::shared_ptr<bake::Node>& moving_root, utils::ini_file& config, const std::shared_ptr<bake::Animation>& animation, const std::string& file)
 {
-	std::cout << "Animation `" << file << "` affects nodes: " << std_ext::join_to_string(
-		apply(animation.entries, [](const bake::NodeTransition& t) { return t.node->name; }), ", ") << "\n";
+	animation->init(moving_root);
+	const auto node_names = where(
+		apply(animation->entries, [](const bake::NodeTransition& t) { return t.node ? t.node->name : ""; }),
+		[](const std::string& t) { return !t.empty(); });
+	std::cout << "Animation `" << file << "` affects nodes: " << std_ext::join_to_string(node_names, ", ") << "\n";
 
 	auto name_lc = utils::path(file).filename().string();
 	std::transform(name_lc.begin(), name_lc.end(), name_lc.begin(), tolower);
 
 	std::string key;
-	if (file == "lights.ksanim")
+	if (name_lc == "lights.ksanim")
 	{
 		key = "HEADLIGHTS_NODES";
 	}
-	else if (file == "car_door_l.ksanim")
+	else if (name_lc == "car_door_l.ksanim" || name_lc == "car_door_r.ksanim")
 	{
 		key = "DOOR_NODES";
 	}
@@ -203,7 +160,7 @@ void fill_animation(utils::ini_file& config, const bake::Animation& animation, c
 		{
 			if (item == "@AUTO")
 			{
-				list_new += apply(animation.entries, [](const bake::NodeTransition& t) { return t.node->name; });
+				list_new |= node_names;
 			}
 			else
 			{
@@ -286,7 +243,7 @@ struct file_processor
 	std::vector<float> animations_steps;
 	mixing_params animations_mixing{};
 	std::vector<std::shared_ptr<bake::Mesh>> animations_mixing_inverse;
-	std::vector<bake::Animation> animation_instances;
+	std::vector<std::shared_ptr<bake::Animation>> animation_instances;
 
 	float interior_mult = 1.f;
 	float exterior_mult = 1.f;
@@ -297,7 +254,13 @@ struct file_processor
 
 	std::shared_ptr<bake::Node> root;
 	std::shared_ptr<bake::Node> driver_root;
+	std::shared_ptr<bake::Node> driver_root_lodb;
 	std::shared_ptr<bake::Scene> driver_root_scene;
+	std::vector<std::shared_ptr<bake::Animation>> driver_steer_animations;
+	std::vector<std::shared_ptr<bake::Animation>> driver_animations;
+	std::vector<float> driver_animations_steps;
+	std::vector<float> driver_animations_steer_steps;
+	mixing_params driver_animations_mixing{};
 
 	struct
 	{
@@ -310,7 +273,7 @@ struct file_processor
 			if (ready) return;
 			ready = true;
 			const auto data_blurred = utils::ini_file(filename.parent_path() / "data" / "blurred_objects.ini");
-			for (const auto& s : data_blurred.iterate("OBJECT"))
+			for (const auto& s : data_blurred.iterate_break("OBJECT"))
 			{
 				(data_blurred.get(s, "MIN_SPEED", 0.f) == 0.f ? static_names : blurred_names)
 					.push_back(data_blurred.get(s, "NAME", std::string()));
@@ -327,6 +290,16 @@ struct file_processor
 	const std::vector<std::string> names_hr{"COCKPIT_HR", "STEER_HR"};
 	const std::vector<std::string> names_lr{"COCKPIT_LR", "STEER_LR"};
 
+	std::vector<std::string> bake_as_trees;
+	std::vector<std::string> bake_as_grass;
+
+	struct reduced_ground
+	{
+		std::vector<std::shared_ptr<bake::Mesh>> meshes;
+		float factor;
+	};
+	std::vector<reduced_ground> reduced_ground_params;
+
 	file_processor(utils::path filename, bool is_cuda_available)
 		: input_file(std::move(filename))
 	{
@@ -339,15 +312,34 @@ struct file_processor
 			mode = is_car(input_file) ? "CAR" : "TRACK";
 		}
 
-		auto optix_context = config.get("GENERAL", "OPTIX_CONTEXT", std::string("AUTO"));
-		if (optix_context == "AUTO")
-		{
-			optix_context = is_cuda_available ? "CUDA" : "GPU";
-		}
-		cfg_bake.use_cuda = optix_context != "GPU";
-
 		// Specialized options
 		section = "MODE_" + mode;
+
+		// Override for certain cars or tracks
+		auto id = input_file.parent_path().filename().string();
+		for (const auto& s : config.iterate_nobreak("SPECIFIC"))
+		{
+			if (std_ext::match(config.get(s, mode, std::string()), id))
+			{
+				const auto desc = config.get(s, "DESCRIPTION", std::string());
+				std::cout << "Found spec. options" << (desc.empty() ? " for `" + id + "`" : ": " + desc) << "\n";
+				for (const auto& p : config.sections[s])
+				{
+					auto i = p.first.find("__");
+					if (i == std::string::npos)
+					{
+						config.sections[section][p.first] = p.second;
+					}
+					else
+					{
+						config.sections[p.first.substr(0, i)][p.first.substr(i + 2)] = p.second;
+					}
+				}
+			}
+		}
+
+		// General options
+		cfg_bake.use_cuda = config.get("GENERAL", "CPU_ONLY", std::string("AUTO")) == "AUTO" ? is_cuda_available : config.get("GENERAL", "CPU_ONLY", false);
 		cfg_load.exclude_patch = config.get(section, "EXCLUDE_FROM_BAKING", std::vector<std::string>());
 		cfg_load.exclude_blockers = config.get(section, "FORCE_PASSING_LIGHT", std::vector<std::string>());
 		cfg_load.exclude_blockers_alpha_test = config.get(section, "FORCE_ALPHA_TEST_PASSING_LIGHT", false);
@@ -398,9 +390,20 @@ struct file_processor
 			config.get(section, "ANIMATIONS_MIXING_MULT", 0.8f)
 		};
 
+		if (FEATURE_ACTIVE("USE_RIGHT_DOOR_ANIM_IF_NEEDED")
+			&& utils::ini_file(input_file.parent_path() / "data" / "car.ini").get("GRAPHICS", "DRIVEREYES", 0.f) < 0.f)
+		{
+			animations -= {"car_door_L.ksanim", "car_door_l.ksanim"};
+			animations.emplace_back("car_door_R.ksanim");
+		}
+
 		interior_mult = config.get(section, "BRIGHTER_AMBIENT_INTERIOR", 1.f);
 		exterior_mult = config.get(section, "BRIGHTER_AMBIENT_EXTERIOR", 1.f);
 		driver_mult = config.get(section, "BRIGHTER_AMBIENT_DRIVER", 1.f);
+
+		bake_as_trees = config.get(section, "BAKE_AS_TREES", std::vector<std::string>());
+		bake_as_grass = config.get(section, "BAKE_AS_GRASS", std::vector<std::string>());
+		cfg_load.exclude_blockers += bake_as_grass;
 
 		// Actual baking starts here, with loading of model
 		{
@@ -420,6 +423,22 @@ struct file_processor
 			}
 			std::cout << "\t" << meshes.size() << " meshes" << std::endl;
 			std::cout << "\t" << num_vertices / 1000 << "K vertices, " << num_triangles / 1000 << "K triangles" << std::endl;
+		}
+
+		// Loading extra offsets
+		for (auto i = 0; i < 100; i++)
+		{
+			std::vector<std::string> names;
+			float offset;
+			if (config.try_get(section, "EXTRA_OFFSET_" + std::to_string(i) + "_NAMES", names)
+				&& config.try_get(section, "EXTRA_OFFSET_" + std::to_string(i) + "_VALUE", offset)
+				&& offset != 0.f)
+			{
+				for (const auto& mesh : root->find_meshes(names))
+				{
+					mesh->extra_samples_offset = offset;
+				}
+			}
 		}
 
 		// Resetting some objects just in case
@@ -445,12 +464,73 @@ struct file_processor
 			if (exists(driver_kn5) && exists(driver_pos))
 			{
 				driver_root = load_model(driver_kn5, cfg_load);
-				load_hierarchy(driver_pos)->align(driver_root);
+
+				const auto hierarcy = load_hierarchy(driver_pos);
+				hierarcy->align(driver_root);
+
+				std::shared_ptr<bake::Animation> steer_anim;
 				if (FEATURE_ACTIVE("DRIVER_POSITION_WITH_STEER_ANIM"))
 				{
-					load_ksanim(input_file.parent_path() / "animations" / "steer.ksanim", driver_root, true).apply(0.5f);
+					steer_anim = load_ksanim(input_file.parent_path() / "animations" / "steer.ksanim", true);
+					steer_anim->apply(driver_root, 0.5f);
 				}
+
 				driver_root_scene = std::make_shared<bake::Scene>(driver_root);
+
+				if (FEATURE_ACTIVE("DRIVER_INCLUDE_LOD_B"))
+				{
+					auto driver_lodb = driver_kn5.parent_path() / driver_kn5.filename_without_extension() + "_B.kn5";
+					if (exists(driver_lodb))
+					{
+						driver_root_lodb = load_model(driver_lodb, cfg_load);
+						hierarcy->align(driver_root_lodb);
+						if (steer_anim)
+						{
+							steer_anim->apply(driver_root_lodb, 0.5f);
+						}
+					}
+				}
+
+				if (FEATURE_ACTIVE("DRIVER_BAKE_ANIMS"))
+				{
+					const auto anims = config.get(section, "DRIVER_ANIMATIONS", std::vector<std::string>());
+					for (const auto& name : anims)
+					{
+						const auto anim_filename = input_file.parent_path() / "animations" / name;
+						if (exists(anim_filename))
+						{
+							(name == "steer.ksanim" ? driver_steer_animations : driver_animations).push_back(load_ksanim(anim_filename));
+						}
+					}
+
+					driver_animations_steps = config.get(section, "DRIVER_ANIMATIONS_STEPS", std::vector<float>());
+					driver_animations_steer_steps = config.get(section, "DRIVER_ANIMATIONS_STEER_STEPS", std::vector<float>());
+					driver_animations_mixing = mixing_params{
+						config.get(section, "DRIVER_ANIMATIONS_MIXING", std::string("MAX")) == "MAX",
+						config.get(section, "DRIVER_ANIMATIONS_MIXING_MULT", 0.8f)
+					};
+				}
+			}
+		}
+
+		// Loading ground adjustments
+		if (cfg_bake.use_ground_plane_blocker)
+		{
+			for (auto i = 0; i < 100; i++)
+			{
+				std::vector<std::string> names;
+				float factor;
+				if (config.try_get(section, "REDUCED_GROUND_" + std::to_string(i) + "_NAMES", names)
+					&& config.try_get(section, "REDUCED_GROUND_" + std::to_string(i) + "_FACTOR", factor)
+					&& factor != 0.f)
+				{
+					auto list = root->find_any_meshes(names);
+					if (driver_root != nullptr)
+					{
+						list += driver_root->find_any_meshes(names);
+					}
+					reduced_ground_params.push_back({list, factor});
+				}
 			}
 		}
 
@@ -471,25 +551,25 @@ struct file_processor
 		// Preparing animations
 		for (const auto& file : animations)
 		{
-			const auto loaded = load_ksanim(input_file.parent_path() / "animations" / file, root);
-			if (!loaded.entries.empty())
+			auto loaded = load_ksanim(input_file.parent_path() / "animations" / file);
+			if (!loaded->entries.empty())
 			{
 				animation_instances.push_back(loaded);
-				fill_animation(cfg_save.extra_config, loaded, file);
+				fill_animation(root, cfg_save.extra_config, loaded, file);
 			}
 		}
 
-		if (FEATURE_ACTIVE("LOAD_WING_ANIMATIONS"))
+		if (config.get(section, "ANIMATIONS_LOAD_WINGS", false))
 		{
 			const auto data_wing_animations = utils::ini_file(input_file.parent_path() / "data" / "wing_animations.ini");
-			for (const auto& s : data_wing_animations.iterate("ANIMATION"))
+			for (const auto& s : data_wing_animations.iterate_break("ANIMATION"))
 			{
 				const auto file = data_wing_animations.get(s, "FILE", std::string());
-				const auto loaded = load_ksanim(input_file.parent_path() / "animations" / file, root);
-				if (!loaded.entries.empty())
+				auto loaded = load_ksanim(input_file.parent_path() / "animations" / file);
+				if (!loaded->entries.empty())
 				{
 					animation_instances.push_back(loaded);
-					fill_animation(cfg_save.extra_config, loaded, file);
+					fill_animation(root, cfg_save.extra_config, loaded, file);
 				}
 			}
 		}
@@ -502,12 +582,58 @@ struct file_processor
 		}
 	}
 
+	baked_data bake_scene(const std::shared_ptr<bake::Scene>& scene, const bake_params& config, bool verbose = false)
+	{
+		return bake_scene(scene, scene->blockers, config, verbose);
+	}
+
+	baked_data bake_scene(const std::shared_ptr<bake::Scene>& scene, const std::vector<std::shared_ptr<bake::Mesh>>& blockers,
+		const bake_params& config, bool verbose = false)
+	{
+		if (!reduced_ground_params.empty())
+		{
+			auto scene_adj = std::make_shared<bake::Scene>(*scene);
+			for (const auto& r : reduced_ground_params)
+			{
+				if (r.factor == 1.f)
+				{
+					scene_adj->receivers -= r.meshes;
+				}
+			}
+
+			auto result = bake_wrap::bake_scene(scene_adj, blockers, config, verbose);
+			auto config_noground = config;
+			config_noground.use_ground_plane_blocker = false;
+
+			for (const auto& r : reduced_ground_params)
+			{
+				scene_adj->receivers = scene->receivers & r.meshes;
+				if (!scene_adj->receivers.empty())
+				{
+					result.max(bake_wrap::bake_scene(scene_adj, blockers, config_noground, verbose), r.factor, {}, true);
+				}
+			}
+
+			return result;
+		}
+		else
+		{
+			return bake_wrap::bake_scene(scene, blockers, config, verbose);
+		}
+	}
+
 	void run()
 	{
 		// Optional dumping
 		std::string dump_as;
 		if (config.try_get(section, "DUMP_INSTEAD_OF_BAKING", dump_as) && !dump_as.empty())
 		{
+			bake::Animation::apply_all(root, {
+				load_ksanim(input_file.parent_path() / "animations" / "car_DOOR_L.ksanim"),
+				load_ksanim(input_file.parent_path() / "animations" / "car_DOOR_R.ksanim"),
+			}, 1.f);
+			driver_root->update_matrix();
+			driver_root->resolve_skinned();
 			dump_obj(dump_as, root->get_meshes() + driver_root->get_meshes());
 			return;
 		}
@@ -524,8 +650,8 @@ struct file_processor
 			{
 				root_scene->receivers -= n->get_meshes();
 			}
-			auto ao_alt = bake_wrap::bake_scene(root_scene, driver_shadow_blockers, cfg_bake, true);
-			bake_animations(driver_shadow_targets, driver_shadow_blockers, ao_alt);
+			auto ao_alt = bake_scene(root_scene, driver_shadow_blockers, cfg_bake, true);
+			bake_animations(root, driver_shadow_targets, driver_shadow_blockers, cfg_bake, ao_alt);
 			ao.set_alternative_set(ao_alt);
 		}
 
@@ -533,18 +659,21 @@ struct file_processor
 		{
 			if (!exterior_materials.empty())
 			{
+				cfg_save.extra_config.set("SHADER_REPLACEMENT_0_FIX_EXT", "TAGS", std::string("VAO_PATCH"));
 				cfg_save.extra_config.set("SHADER_REPLACEMENT_0_FIX_EXT", "MATERIALS", to_vector(exterior_materials));
 				cfg_save.extra_config.set("SHADER_REPLACEMENT_0_FIX_EXT", "PROP_0", std::vector<std::string>{"ksAmbient", "*" + std::to_string(exterior_mult)});
 			}
 
 			if (!interior_materials.empty())
 			{
+				cfg_save.extra_config.set("SHADER_REPLACEMENT_0_FIX_INT", "TAGS", std::string("VAO_PATCH"));
 				cfg_save.extra_config.set("SHADER_REPLACEMENT_0_FIX_INT", "MATERIALS", to_vector(interior_materials));
 				cfg_save.extra_config.set("SHADER_REPLACEMENT_0_FIX_INT", "PROP_0", std::vector<std::string>{"ksAmbient", "*" + std::to_string(interior_mult)});
 			}
 
 			if (!driver_materials.empty())
 			{
+				cfg_save.extra_config.set("SHADER_REPLACEMENT_0_FIX_DRIVER", "TAGS", std::string("VAO_PATCH"));
 				cfg_save.extra_config.set("SHADER_REPLACEMENT_0_FIX_DRIVER", "MATERIALS", to_vector(driver_materials));
 				cfg_save.extra_config.set("SHADER_REPLACEMENT_0_FIX_DRIVER", "PROP_0", std::vector<std::string>{"ksAmbient", "*" + std::to_string(driver_mult)});
 			}
@@ -555,50 +684,159 @@ struct file_processor
 		}
 	}
 
-	void bake_animations(const std::vector<std::shared_ptr<bake::Node>>& targets,
-		const std::vector<std::shared_ptr<bake::Mesh>>& blockers,
-		baked_data& ao, const std::string& comment = "")
+	void bake_animations(const std::shared_ptr<bake::Node>& moving_root, const std::vector<std::shared_ptr<bake::Node>>& targets,
+		const std::vector<std::shared_ptr<bake::Mesh>>& blockers, const bake_params& cfg_bake, baked_data& ao, const std::string& comment = "",
+		bool verbose = true, bool apply_to_both_sets = false)
 	{
-		if (animations.empty()) return;
-		std::cout << "Baking animations (" << animations.size() << (comment.empty() ? " found):" : " found, " + comment + "):") << std::endl;
+		bake_animations(moving_root, targets, blockers, animation_instances, animations_steps, animations_mixing, animations_mixing_inverse,
+			cfg_bake, ao, comment, verbose, apply_to_both_sets);
+	}
+
+	void bake_animations(const std::shared_ptr<bake::Node>& moving_root, const std::vector<std::shared_ptr<bake::Node>>& targets,
+		const std::vector<std::shared_ptr<bake::Mesh>>& blockers,
+		std::vector<std::shared_ptr<bake::Animation>>& animation_instances, const std::vector<float>& animations_steps, const mixing_params& animations_mixing,
+		const std::vector<std::shared_ptr<bake::Mesh>>& animations_mixing_inverse, const bake_params& cfg_bake, baked_data& ao, const std::string& comment = "",
+		bool verbose = true, bool apply_to_both_sets = false)
+	{
+		if (animation_instances.empty()) return;
+		if (verbose)
+		{
+			std::cout << "Baking animations (" << animation_instances.size() << (comment.empty() ? " found):" : " found, " + comment + "):") << std::endl;
+		}
 		for (auto i = 0U; i < animations_steps.size(); i++)
 		{
 			const auto pos = animations_steps[i];
-			std::cout << (i == 0 ? "\t" : "\r\t") << "Position: " << round(pos * 100.f) << "%";
-			for (const auto& a : animation_instances)
+			if (verbose)
 			{
-				a.apply(pos);
+				std::cout << (i == 0 ? "\t" : "\r\t") << "Position: " << round(pos * 100.f) << "%";
 			}
-
-			root->update_matrix();
-			root->resolve_skinned();
-
-			const auto baked = bake_wrap::bake_scene(std::make_shared<bake::Scene>(targets), blockers, cfg_bake);
-			if (animations_mixing.use_max)
+			if (bake::Animation::apply_all(moving_root, animation_instances, pos))
 			{
-				ao.max(baked, animations_mixing.max_mult, animations_mixing_inverse);
+				const auto baked = bake_scene(std::make_shared<bake::Scene>(targets), blockers, cfg_bake);
+				if (animations_mixing.use_max)
+				{
+					ao.max(baked, animations_mixing.max_mult, animations_mixing_inverse, apply_to_both_sets);
+				}
+				else
+				{
+					const auto avg_mult = 1.f / float(animations_steps.size() + 1);
+					ao.average(baked, avg_mult, i == 0 ? avg_mult : 1.f, animations_mixing_inverse, apply_to_both_sets);
+				}
+			}
+		}
+		bake::Animation::apply_all(moving_root, animation_instances, 0.f);
+		if (verbose)
+		{
+			std::cout << std::endl;
+		}
+	}
+
+	void bake_rotating(const std::shared_ptr<bake::Node>& root, baked_data& ao, const bake_params& params, const mixing_params& mixing, const std::string& comment = "",
+		const bool verbose = true)
+	{
+		const auto root_scene = std::make_shared<bake::Scene>(root);
+		const auto nodes_x = root->find_nodes(rotating_x);
+		const auto nodes_y = root->find_nodes(rotating_y);
+		const auto nodes_z = root->find_nodes(rotating_z);
+		const auto rotating = nodes_x + nodes_y + nodes_z;
+		if (rotating.empty()) return;
+
+		if (verbose)
+		{
+			std::cout << "Baking rotating objects (" << rotating.size() << (comment.empty() ? " found):" : " found, " + comment + "):") << std::endl;
+		}
+
+		const auto iterations = int(ceilf(359.f / rotating_step));
+		for (auto i = 1; i < iterations; i++)
+		{
+			const auto deg = i * rotating_step;
+			if (verbose)
+			{
+				std::cout << (i == 1 ? "\t" : "\r\t") << "Angle: " << deg << utf16_to_utf8(L"°");
+			}
+			for (const auto& n : nodes_x)
+			{
+				const auto axis = float3{1.f, 0.f, 0.f};
+				n->matrix_local = n->matrix_local_orig * bake::NodeTransformation::rotation(deg, &axis.x);
+			}
+			for (const auto& n : nodes_y)
+			{
+				const auto axis = float3{0.f, 1.f, 0.f};
+				n->matrix_local = n->matrix_local_orig * bake::NodeTransformation::rotation(deg, &axis.x);
+			}
+			for (const auto& n : nodes_z)
+			{
+				const auto axis = float3{0.f, 0.f, 1.f};
+				n->matrix_local = n->matrix_local_orig * bake::NodeTransformation::rotation(deg, &axis.x);
+			}
+			const auto baked = bake_scene(std::make_shared<bake::Scene>(rotating), root_scene->blockers, params);
+			if (mixing.use_max)
+			{
+				ao.max(baked, mixing.max_mult);
 			}
 			else
 			{
-				const auto avg_mult = 1.f / float(animations_steps.size() + 1);
-				ao.average(baked, avg_mult, i == 0 ? avg_mult : 1.f, animations_mixing_inverse);
+				const auto avg_mult = 1.f / float(iterations);
+				ao.average(baked, avg_mult, i == 1 ? avg_mult : 1.f);
 			}
 		}
-		for (const auto& a : animation_instances)
+		if (verbose)
 		{
-			a.apply(0.f);
+			std::cout << std::endl;
 		}
-		std::cout << std::endl;
 	}
 
 	baked_data bake_driver_shadows()
 	{
-		root->set_active({"CINTURE_ON"}, true);
+		baked_data ret;
 		const auto scene_with_seatbelts = std::make_shared<bake::Scene>(root);
-		const auto result = bake_wrap::bake_scene(std::make_shared<bake::Scene>(driver_root), scene_with_seatbelts->blockers + driver_root_scene->blockers, cfg_bake);
+		root->set_active({"CINTURE_ON"}, true);
+
+		{
+			PERF("Special: baking AO for driver model")
+			ret = bake_scene(std::make_shared<bake::Scene>(driver_root), scene_with_seatbelts->blockers + driver_root_scene->blockers, cfg_bake);
+		}
+
+		if (FEATURE_ACTIVE("DRIVER_BAKE_ANIMS"))
+		{
+			PERF("Special: baking animations for driver AO")
+			bake_animations(driver_root, {driver_root}, scene_with_seatbelts->blockers + driver_root_scene->blockers,
+				driver_steer_animations, driver_animations_steer_steps, driver_animations_mixing, {},
+				cfg_bake, ret, "", false, true);
+			bake_animations(driver_root, {driver_root}, scene_with_seatbelts->blockers + driver_root_scene->blockers,
+				driver_animations, driver_animations_steps, driver_animations_mixing, {},
+				cfg_bake, ret, "", false, true);
+		}
+
+		if (FEATURE_ACTIVE("DRIVER_INCLUDE_LOD_B") && driver_root_lodb)
+		{
+			PERF("Special: baking AO with animations for driver model (LOD B)")
+
+			auto lodb_cfg_bake = cfg_bake;
+			lodb_cfg_bake.filter_mode = bake::VertexFilterMode::VERTEX_FILTER_AREA_BASED;
+			lodb_cfg_bake.ground_offset_factor = 0.2f;
+
+			const auto lodb_scene = std::make_shared<bake::Scene>(driver_root_lodb);
+			ret.extend(bake_scene(std::make_shared<bake::Scene>(driver_root_lodb), scene_with_seatbelts->blockers + lodb_scene->blockers, lodb_cfg_bake));
+			bake_animations(driver_root_lodb, {driver_root_lodb}, scene_with_seatbelts->blockers + lodb_scene->blockers,
+				driver_steer_animations, driver_animations_steer_steps, driver_animations_mixing, {},
+				lodb_cfg_bake, ret, "", false, true);
+			bake_animations(driver_root_lodb, {driver_root_lodb}, scene_with_seatbelts->blockers + lodb_scene->blockers,
+				driver_animations, driver_animations_steps, driver_animations_mixing, {},
+				lodb_cfg_bake, ret, "", false, true);
+		}
+
 		root->set_active({"CINTURE_ON"}, false);
 		resulting_name = "main_geometry.vao-patch";
-		return result;
+		return ret;
+	}
+
+	utils::path get_ai_lane_filename(const std::string& name) const
+	{
+		const auto base_name = input_file.filename_without_extension().string();
+		return (input_file.extension() == ".ini" && base_name != "models" && base_name.find("models_") == 0
+			? input_file.parent_path() / base_name.substr(strlen("models_"))
+			: input_file.parent_path()) / "ai" / name;
 	}
 
 	baked_data bake_stuff(const std::shared_ptr<bake::Node>& root)
@@ -606,8 +844,173 @@ struct file_processor
 		// Generating AO
 		std::cout << "Main pass:" << std::endl;
 		const auto root_scene = std::make_shared<bake::Scene>(root);
+		root_scene->receivers -= root->find_meshes(bake_as_trees);
+		root_scene->receivers -= root->find_meshes(bake_as_grass);
 
-		auto ao = bake_wrap::bake_scene(root_scene, cfg_bake, true);
+		if (FEATURE_ACTIVE("EXCLUDE_POBJECTS"))
+		{
+			root_scene->receivers -= root->find_any_meshes({"AC_POBJECT?"});
+		}
+
+		auto ao = bake_scene(root_scene, cfg_bake, true);
+
+		// Applying trees shadow factor
+		const auto trees_shadow_factor = config.get(section, "TREES_SHADOW_FACTOR", 1.f);
+		if (!bake_as_trees.empty() && trees_shadow_factor != 1.f)
+		{
+			PERF("Special: applying trees shadow factor")
+			const auto scene_without_trees = std::make_shared<bake::Scene>(*root_scene);
+			scene_without_trees->blockers -= root->find_meshes(bake_as_trees);
+			ao.max(bake_scene(scene_without_trees, cfg_bake), 1.f - trees_shadow_factor);
+		}
+
+		// Generating AO for trees
+		if (!bake_as_trees.empty())
+		{
+			PERF("Special: baking trees")
+			const auto trees_scene = std::make_shared<bake::Scene>(root);
+			auto trees_meshes = root->find_meshes(bake_as_trees);
+			trees_meshes -= root->find_meshes(bake_as_grass);
+			auto trees_cfg_bake = cfg_bake;
+			trees_cfg_bake.scene_offset_scale = 2.f;
+			trees_cfg_bake.disable_normals = true;
+			trees_cfg_bake.missing_normals_up = true;
+			trees_cfg_bake.use_ground_plane_blocker = false;
+			trees_cfg_bake.filter_mode = bake::VertexFilterMode::VERTEX_FILTER_AREA_BASED;
+			trees_scene->receivers = trees_meshes;
+			trees_scene->blockers -= trees_meshes;
+			ao.replace(bake_scene(trees_scene, trees_cfg_bake));
+		}
+
+		// Generating AO for grass
+		if (!bake_as_grass.empty())
+		{
+			baked_data grass_ao;
+			const auto grass_scene = std::make_shared<bake::Scene>(root);
+			auto grass_cfg_bake = cfg_bake;
+			{
+				PERF("Special: baking grass")
+				const auto grass_meshes = root->find_meshes(bake_as_grass);
+				grass_cfg_bake.scene_offset_scale = 0.5f;
+				grass_cfg_bake.disable_normals = true;
+				grass_cfg_bake.missing_normals_up = true;
+				grass_cfg_bake.use_ground_plane_blocker = false;
+				grass_cfg_bake.filter_mode = bake::VertexFilterMode::VERTEX_FILTER_AREA_BASED;
+				grass_scene->receivers = grass_meshes;
+				grass_ao = bake_scene(grass_scene, grass_cfg_bake);
+			}
+			if (!bake_as_trees.empty() && trees_shadow_factor != 1.f)
+			{
+				PERF("Special: baking grass, applying trees shadow factor")
+				grass_scene->blockers -= root->find_meshes(bake_as_trees);
+				grass_ao.max(bake_scene(grass_scene, grass_cfg_bake), 1.f - trees_shadow_factor);
+			}
+			ao.replace(grass_ao);
+		}
+
+		// Generating AO for AI lane
+		const auto ao_samples_pits = config.get(section, "AO_SAMPLES_PIT_POINTS", false);
+		const auto ao_samples_ai_lanes = config.get(section, "AO_SAMPLES_AI_LANES", false);
+		if (ao_samples_pits || ao_samples_ai_lanes)
+		{
+			const auto ai_lanes_y_offset = config.get(section, "AO_SAMPLES_AI_LANES_Y_OFFSET", 0.5f);
+			const auto ai_lanes_sides = config.get(section, "AO_SAMPLES_AI_LANES_SIDES", 0.67f) / 2.f;
+
+			PERF("Special: baking extra AO samples")
+
+			auto mesh = std::make_shared<bake::Mesh>();
+			mesh->name = "@@__EXTRA_AO@";
+			mesh->cast_shadows = false;
+			mesh->receive_shadows = true;
+			mesh->visible = true;
+			mesh->material = std::make_shared<bake::Material>();
+			mesh->signature_point = bake::Vec3{};
+
+			static const auto distance_threshold = 4.f;
+			static const float2 poisson_disk[10] = {
+				optix::make_float2(-0.2027472f, -0.7174203f),
+				optix::make_float2(-0.4839617f, -0.1232477f),
+				optix::make_float2(0.4924171f, -0.06338801f),
+				optix::make_float2(-0.6403998f, 0.6834511f),
+				optix::make_float2(-0.8817205f, -0.4650014f),
+				optix::make_float2(0.04554421f, 0.1661989f),
+				optix::make_float2(0.1042245f, 0.9336259f),
+				optix::make_float2(0.6152743f, 0.6344957f),
+				optix::make_float2(0.5085323f, -0.7106467f),
+				optix::make_float2(-0.9731231f, 0.1328296f),
+			};
+
+			if (ao_samples_pits)
+			{
+				for (const auto& n : root->find_nodes({"AC_PIT_?"}))
+				{
+					mesh->vertices.push_back({n->matrix[3], n->matrix[7], n->matrix[11]});
+					for (auto p : poisson_disk)
+					{
+						mesh->vertices.push_back({n->matrix[3] + p.x * 4.f, n->matrix[7], n->matrix[11] + p.y * 4.f});
+					}
+				}
+			}
+
+			if (ao_samples_ai_lanes)
+			{
+				const auto ai_fast = load_ailane(get_ai_lane_filename("fast_lane.ai"));
+				const auto ai_pits = load_ailane(get_ai_lane_filename("pit_lane.ai"));
+
+				for (const auto& ai : {ai_fast, ai_pits})
+				{
+					auto dist = distance_threshold;
+					for (const auto& v : ai)
+					{
+						dist += v.length;
+						if (dist > distance_threshold)
+						{
+							mesh->vertices.push_back(v.point);
+							dist = 0.f;
+						}
+					}
+				}
+
+				if (ai_lanes_sides > 0.f)
+				{
+					for (const auto& ai : {ai_fast, ai_pits})
+					{
+						auto dist = distance_threshold;
+						for (auto i = 1U; i < ai.size(); i++)
+						{
+							dist += ai[i - 1].length;
+							if (dist > distance_threshold)
+							{
+								auto v0 = *(float3*)&ai[i - 1].point;
+								auto v1 = *(float3*)&ai[i].point;
+								auto side = optix::normalize(optix::cross(v1 - v0, float3{0.f, 1.f, 0.f}));
+								auto s0 = (ai[i - 1].side_left + ai[i - 1].side_left) * ai_lanes_sides;
+								auto s1 = (ai[i - 1].side_right + ai[i - 1].side_right) * ai_lanes_sides;
+								if (s0 == 0) s0 = 4.f;
+								if (s1 == 0) s1 = 4.f;
+								auto p0 = (v0 + v1) / 2.f - side * s0;
+								auto p1 = (v0 + v1) / 2.f + side * s1;
+								mesh->vertices.push_back(*(bake::Vec3*)&p0);
+								mesh->vertices.push_back(*(bake::Vec3*)&p1);
+								dist = 0.f;
+							}
+						}
+					}
+				}
+			}
+
+			auto cfg_extra_ao = cfg_bake;
+			cfg_extra_ao.ground_offset_factor = 2.f;
+			cfg_extra_ao.disable_normals = true;
+			cfg_extra_ao.sample_on_points = true;
+			cfg_extra_ao.sample_offset = {0.f, ai_lanes_y_offset, 0.f};
+			cfg_extra_ao.use_ground_plane_blocker = false;
+			cfg_extra_ao.filter_mode = bake::VertexFilterMode::VERTEX_FILTER_AREA_BASED;
+
+			const auto extra_scene = std::make_shared<bake::Scene>(root);
+			extra_scene->receivers = {mesh};
+			ao.extend(bake_scene(extra_scene, cfg_extra_ao));
+		}
 
 		// Generating AO for driver
 		if (FEATURE_ACTIVE("DRIVER_RECEIVES_SHADOWS"))
@@ -622,7 +1025,7 @@ struct file_processor
 			PERF("Special: blurred objects: " + std::to_string(blurred.size()));
 			root->set_active(blurred_objects.blurred_names, true);
 			root->set_active(blurred_objects.static_names, false);
-			ao.extend(bake_wrap::bake_scene(std::make_shared<bake::Scene>(blurred), root_scene->blockers, cfg_bake));
+			ao.extend(bake_scene(std::make_shared<bake::Scene>(blurred), root_scene->blockers, cfg_bake));
 			root->set_active(blurred_objects.blurred_names, false);
 			root->set_active(blurred_objects.static_names, true);
 		}
@@ -632,7 +1035,7 @@ struct file_processor
 			PERF("Special: baking low-res cockpit");
 			root->set_active(names_lr, true);
 			root->set_active(names_hr, false);
-			ao.extend(bake_wrap::bake_scene(std::make_shared<bake::Scene>(root->find_nodes(names_lr)), root_scene->blockers, cfg_bake));
+			ao.extend(bake_scene(std::make_shared<bake::Scene>(root->find_nodes(names_lr)), root_scene->blockers, cfg_bake));
 			root->set_active(names_lr, false);
 			root->set_active(names_hr, true);
 		}
@@ -648,14 +1051,14 @@ struct file_processor
 				{
 					seatbelt_on_blockers += driver_root_scene->blockers;
 				}
-				ao.extend(bake_wrap::bake_scene(std::make_shared<bake::Scene>(root->find_node("CINTURE_ON")), seatbelt_on_blockers, cfg_bake));
+				ao.extend(bake_scene(std::make_shared<bake::Scene>(root->find_node("CINTURE_ON")), seatbelt_on_blockers, cfg_bake));
 				root->set_active({"CINTURE_ON"}, false);
 			}
 			if (root->find_node("CINTURE_OFF"))
 			{
 				PERF("Special: baking seatbelt (off)")
 				root->set_active({"CINTURE_OFF"}, true);
-				ao.extend(bake_wrap::bake_scene(std::make_shared<bake::Scene>(root->find_node("CINTURE_OFF")), root_scene->blockers, cfg_bake));
+				ao.extend(bake_scene(std::make_shared<bake::Scene>(root->find_node("CINTURE_OFF")), root_scene->blockers, cfg_bake));
 				root->set_active({"CINTURE_OFF"}, false);
 			}
 		}
@@ -663,13 +1066,13 @@ struct file_processor
 		// Applying animations
 		if (!animation_instances.empty())
 		{
-			bake_animations({root}, root_scene->blockers, ao);
+			bake_animations(root, {root}, root_scene->blockers, cfg_bake, ao);
 
 			if (FEATURE_ACTIVE("DRIVER_RECEIVES_SHADOWS"))
 			{
 				root->set_active({"CINTURE_ON"}, true);
 				auto scene_with_seatbelts = std::make_shared<bake::Scene>(root);
-				bake_animations({driver_root}, scene_with_seatbelts->blockers + driver_root_scene->blockers, ao);
+				bake_animations(root, {driver_root}, scene_with_seatbelts->blockers + driver_root_scene->blockers, cfg_bake, ao);
 				root->set_active({"CINTURE_ON"}, false);
 			}
 
@@ -677,7 +1080,7 @@ struct file_processor
 			{
 				root->set_active({"COCKPIT_LR"}, true);
 				root->set_active({"COCKPIT_HR"}, false);
-				bake_animations({root->find_node("COCKPIT_LR")}, root_scene->blockers, ao, "low-res cockpit");
+				bake_animations(root, {root->find_node("COCKPIT_LR")}, root_scene->blockers, cfg_bake, ao, "low-res cockpit");
 				root->set_active({"COCKPIT_LR"}, false);
 				root->set_active({"COCKPIT_HR"}, true);
 			}
@@ -687,13 +1090,13 @@ struct file_processor
 				if (root->find_node("CINTURE_ON"))
 				{
 					root->set_active({"CINTURE_ON"}, true);
-					bake_animations({root->find_node("CINTURE_ON")}, root_scene->blockers, ao, "seatbelt on");
+					bake_animations(root, {root->find_node("CINTURE_ON")}, root_scene->blockers, cfg_bake, ao, "seatbelt on");
 					root->set_active({"CINTURE_ON"}, false);
 				}
 				if (root->find_node("CINTURE_OFF"))
 				{
 					root->set_active({"CINTURE_OFF"}, true);
-					bake_animations({root->find_node("CINTURE_OFF")}, root_scene->blockers, ao, "seatbelt off");
+					bake_animations(root, {root->find_node("CINTURE_OFF")}, root_scene->blockers, cfg_bake, ao, "seatbelt off");
 					root->set_active({"CINTURE_OFF"}, false);
 				}
 			}
@@ -702,14 +1105,12 @@ struct file_processor
 		// Special case for rotating meshes
 		if (!rotating_x.empty() || !rotating_y.empty() || !rotating_z.empty())
 		{
-			bake_rotating(root, ao, rotating_x, rotating_y, rotating_z,
-				cfg_bake, rotating_step, rotating_mixing);
+			bake_rotating(root, ao, cfg_bake, rotating_mixing);
 			if (FEATURE_ACTIVE("BAKE_BLURRED") && blurred_objects.any(input_file))
 			{
 				root->set_active(blurred_objects.blurred_names, true);
 				root->set_active(blurred_objects.static_names, false);
-				bake_rotating(root, ao, rotating_x, rotating_y, rotating_z,
-					cfg_bake, rotating_step, rotating_mixing, "blurred meshes");
+				bake_rotating(root, ao, cfg_bake, rotating_mixing, "blurred meshes");
 				root->set_active(blurred_objects.blurred_names, false);
 				root->set_active(blurred_objects.static_names, true);
 			}
@@ -722,20 +1123,33 @@ struct file_processor
 			{
 				PERF("Special: baking steering wheel for AO splitting")
 
+				auto steering_wheel_scene = std::make_shared<bake::Scene>(steering_wheel);
+				steering_wheel_scene->receivers = root->find_any_meshes({"STEER_HR", "STEER_LR"});
+
 				// Baking turned by 180° and setting it as primary AO:
 				for (const auto& n : steering_wheel)
 				{
 					const auto axis = float3{0.f, 0.f, 1.f};
 					n->matrix_local = n->matrix_local_orig * bake::NodeTransformation::rotation(180.f, &axis.x);
 				}
-				ao.replace_primary(bake_wrap::bake_scene(std::make_shared<bake::Scene>(steering_wheel), root_scene->blockers, cfg_bake));
+				for (const auto& n : steering_wheel)
+				{
+					n->update_matrix();
+					n->resolve_skinned();
+				}
+				ao.replace_primary(bake_scene(steering_wheel_scene, root_scene->blockers, cfg_bake));
 
 				// Turning wheel back to 0°, baking and mixing it in primary AO with multiplier set to 0.67:
 				for (const auto& n : steering_wheel)
 				{
 					n->matrix_local = n->matrix_local_orig;
 				}
-				ao.max(bake_wrap::bake_scene(std::make_shared<bake::Scene>(steering_wheel), root_scene->blockers, cfg_bake), 0.67f);
+				for (auto n : steering_wheel)
+				{
+					n->update_matrix();
+					n->resolve_skinned();
+				}
+				ao.max(bake_scene(steering_wheel_scene, root_scene->blockers, cfg_bake), 0.67f);
 			}
 		}
 
@@ -744,7 +1158,7 @@ struct file_processor
 		if (FEATURE_ACTIVE("INCLUDE_LODS"))
 		{
 			auto data_lods = utils::ini_file(input_file.parent_path() / "data" / "lods.ini");
-			for (const auto& s : data_lods.iterate("LOD"))
+			for (const auto& s : data_lods.iterate_break("LOD"))
 			{
 				const auto name = data_lods.get(s, "FILE", std::string());
 				const auto lod_in = data_lods.get(s, "IN", 0.f);
@@ -768,17 +1182,17 @@ struct file_processor
 				auto lod_cfg_bake = cfg_bake;
 				if (lod_in > 30.f)
 				{
-					if (FEATURE_ACTIVE("DISTANT_LOGS_INCREASE_OFFSET"))
+					if (FEATURE_ACTIVE("DISTANT_LODS_INCREASE_OFFSET"))
 					{
 						lod_cfg_bake.scene_offset_scale = 0.2f;
 					}
 
-					if (FEATURE_ACTIVE("DISTANT_LOGS_AREA_BASED"))
+					if (FEATURE_ACTIVE("DISTANT_LODS_AREA_BASED"))
 					{
 						lod_cfg_bake.filter_mode = bake::VERTEX_FILTER_AREA_BASED;
 					}
 
-					if (FEATURE_ACTIVE("DISTANT_LOGS_SKIP_WHEELS"))
+					if (FEATURE_ACTIVE("DISTANT_LODS_SKIP_WHEELS"))
 					{
 						lod_root->set_active({"WHEEL_LF", "WHEEL_LR", "WHEEL_RF", "WHEEL_RR"}, false);
 						for (auto w : {"WHEEL_LF", "WHEEL_LR", "WHEEL_RF", "WHEEL_RR"})
@@ -799,19 +1213,24 @@ struct file_processor
 
 				{
 					PERF("Special: adding LOD `" + name + "`")
-					ao.extend(bake_wrap::bake_scene(lod_scene, lod_cfg_bake));
+					ao.extend(bake_scene(lod_scene, lod_cfg_bake));
+				}
+
+				if (!animation_instances.empty())
+				{
+					PERF("Special: baking animations for LOD `" + name + "`")
+					bake_animations(lod_root, {lod_root}, lod_scene->blockers, lod_cfg_bake, ao, "", false);
 				}
 
 				if (!rotating_x.empty() || !rotating_y.empty() || !rotating_z.empty())
 				{
-					bake_rotating(lod_root, ao, rotating_x, rotating_y, rotating_z,
-						lod_cfg_bake, rotating_step, rotating_mixing, "LOD `" + name + "`");
+					PERF("Special: baking rotating objects for LOD `" + name + "`")
+					bake_rotating(lod_root, ao, lod_cfg_bake, rotating_mixing, "", false);
 					if (FEATURE_ACTIVE("BAKE_BLURRED") && blurred_objects.any(input_file))
 					{
 						lod_root->set_active(blurred_objects.blurred_names, true);
 						lod_root->set_active(blurred_objects.static_names, false);
-						bake_rotating(lod_root, ao, rotating_x, rotating_y, rotating_z,
-							lod_cfg_bake, rotating_step, rotating_mixing, "LOD `" + name + "`, blurred meshes");
+						bake_rotating(lod_root, ao, lod_cfg_bake, rotating_mixing, "", false);
 						lod_root->set_active(blurred_objects.blurred_names, false);
 						lod_root->set_active(blurred_objects.static_names, true);
 					}
@@ -865,6 +1284,45 @@ struct file_processor
 	}
 };
 
+#include <cuda_runtime.h>
+
+struct cuda_capabilities
+{
+	bool query_failed;  // True on error
+	int device_count{}; // Number of CUDA devices found 
+	cudaDeviceProp best{};
+
+	std::string info() const
+	{
+		std::stringstream ret;
+		ret << best.name << ", cap.: " << best.major << "." << best.minor;
+		return ret.str();
+	}
+
+	static cuda_capabilities get()
+	{
+		cuda_capabilities ret{};
+		if (cudaGetDeviceCount(&ret.device_count) != cudaSuccess)
+		{
+			ret.query_failed = true;
+		}
+		else
+		{
+			for (auto dev = 0; dev < ret.device_count; dev++)
+			{
+				cudaDeviceProp device_prop{};
+				cudaGetDeviceProperties(&device_prop, dev);
+				if (device_prop.major > ret.best.major
+					|| device_prop.major == ret.best.major && device_prop.minor > ret.best.minor)
+				{
+					ret.best = device_prop;
+				}
+			}
+		}
+		return ret;
+	}
+};
+
 int main(int argc, const char** argv)
 {
 	#ifdef USE_TRYCATCH
@@ -873,28 +1331,79 @@ int main(int argc, const char** argv)
 		#endif
 		SetConsoleOutputCP(CP_UTF8);
 
+		bool is_cuda_available;
 		int cuda_version;
 		const auto cuda_result = cudaRuntimeGetVersion(&cuda_version);
 		if (cuda_result == cudaSuccess && cuda_version)
 		{
-			std::cout << "Installed CUDA: " << cuda_version / 1000 << "." << cuda_version / 10 % 100 << "\n";
+			is_cuda_available = true;
+			std::cout << "Installed CUDA toolkit: " << cuda_version / 1000 << "." << cuda_version / 10 % 100 << "\n";
 		}
 		else
 		{
-			cuda_version = 0;
-			std::cout << "CUDA toolkit is not installed, consider reducing quality settings or expect baking to be orders of magnitude slower\n";
+			is_cuda_available = false;
+			std::cout << "CUDA toolkit is not installed (you can get it here: https://developer.nvidia.com/cuda-80-ga2-download-archive, at least v8.0 is recommended)\n";
 		}
 
-		for (auto i = 1; i < argc; i++)
+		if (is_cuda_available)
 		{
-			file_processor(argv[i], cuda_version > 0).run();
+			const auto cap = cuda_capabilities::get();
+			if (cap.query_failed)
+			{
+				std::cout << "Failed to check existance of any CUDA-compatible devices\n";
+				is_cuda_available = false;
+			}
+			else if (cap.device_count == 0)
+			{
+				std::cout << "No CUDA-compatible devices found\n";
+				is_cuda_available = false;
+			}
+			else if (cap.device_count == 1)
+			{
+				std::cout << "Found a CUDA-compatible device (" << cap.info() << ")\n";
+			}
+			else
+			{
+				std::cout << "Found " << cap.device_count << " CUDA-compatible devices (best one: " << cap.info() << ")\n";
+			}
 		}
+
+		if (argc == 1)
+		{
+			wchar_t filename[1024]{};
+			OPENFILENAME ofn{};
+			ofn.lStructSize = sizeof ofn;
+			ofn.hwndOwner = nullptr;
+			ofn.lpstrFilter = L"AC Models\0*.kn5;*.ini\0Any Files\0*.*\0";
+			ofn.lpstrFile = filename;
+			ofn.nMaxFile = 1024;
+			ofn.lpstrTitle = L"Choose a KN5 or INI file (for tracks) to make a VAO patch for";
+			ofn.Flags = OFN_DONTADDTORECENT | OFN_FILEMUSTEXIST;
+			if (GetOpenFileNameW(&ofn))
+			{
+				file_processor(utils::path(filename), is_cuda_available).run();
+			}
+		}
+		else
+		{
+			for (auto i = 1; i < argc; i++)
+			{
+				file_processor(argv[i], is_cuda_available).run();
+			}
+		}
+
 		return 0;
 		#ifdef USE_TRYCATCH
 	}
 	catch (const std::exception& e)
 	{
-		std::cerr << "Exception: " << e.what();
+		std::cerr << "Exception: " << e.what() << std::endl;
+		std::getchar();
+		return 1;
+	}
+	catch (...)
+	{
+		std::cerr << "Unknown exception" << std::endl;
 		std::getchar();
 		return 1;
 	}

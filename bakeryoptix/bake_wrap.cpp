@@ -15,7 +15,7 @@ void set_vertex_entry(float* vertices, const int idx, const int axis, float* vec
 	vertices[3 * idx + axis] = vec[axis];
 }
 
-void make_ground_plane(const float scene_bbox_min[3], const float scene_bbox_max[3], int upaxis, const float scale_factor, 
+void make_ground_plane(const float scene_bbox_min[3], const float scene_bbox_max[3], int upaxis, const float scale_factor,
 	const float offset_factor, std::vector<bake::Mesh*>& meshes, bake::Scene& scene)
 {
 	auto plane_mesh = new bake::Mesh();
@@ -131,10 +131,37 @@ baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene, cons
 	{
 		{
 			PERF("\tGenerating sample points")
-			total_samples = distribute_samples(*scene,
-				config.min_samples_per_face, config.num_samples, &num_samples_per_instance[0]);
-			allocate_ao_samples(ao_samples, total_samples);
-			sample_instances(*scene, &num_samples_per_instance[0], config.min_samples_per_face, ao_samples);
+
+			if (config.sample_on_points)
+			{
+				total_samples = 0;
+				for (const auto& m : scene->receivers)
+				{
+					total_samples += m->vertices.size();
+				}
+				allocate_ao_samples(ao_samples, total_samples);
+				auto sample_index = 0;
+				const auto sample_positions = reinterpret_cast<bake::Vec3*>(ao_samples.sample_positions);
+				const auto sample_norms = reinterpret_cast<bake::Vec3*>(ao_samples.sample_normals);
+				const auto sample_face_norms = reinterpret_cast<bake::Vec3*>(ao_samples.sample_face_normals);
+				for (const auto& m : scene->receivers)
+				{
+					for (const auto& p : m->vertices)
+					{
+						sample_positions[sample_index] = {p.x + config.sample_offset.x, p.y + config.sample_offset.y, p.z + config.sample_offset.z};
+						sample_norms[sample_index] = {0.f, 1.f, 0.f};
+						sample_face_norms[sample_index] = {0.f, 1.f, 0.f};
+						sample_index++;
+					}
+				}
+			}
+			else
+			{
+				total_samples = distribute_samples(*scene,
+					config.min_samples_per_face, config.num_samples, &num_samples_per_instance[0]);
+				allocate_ao_samples(ao_samples, total_samples);
+				sample_instances(*scene, &num_samples_per_instance[0], config.min_samples_per_face, config.disable_normals, config.missing_normals_up, ao_samples);
+			}
 		}
 		if (verbose) std::cout << "\tTotal samples: " << total_samples << std::endl;
 	}
@@ -172,7 +199,23 @@ baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene, cons
 		{
 			vertex_ao[i] = new float[ scene->receivers[i]->vertices.size() ];
 		}
-		map_ao_to_vertices(*scene, &num_samples_per_instance[0], ao_samples, &ao_values[0], config.filter_mode, config.regularization_weight, vertex_ao);
+
+		if (config.sample_on_points)
+		{
+			auto index = 0U;
+			for (size_t i = 0U; i < scene->receivers.size(); i++)
+			{
+				const auto& m = scene->receivers[i];
+				for (auto j = 0U; j < m->vertices.size(); j++)
+				{
+					vertex_ao[i][j] = ao_values[index++];
+				}
+			}
+		}
+		else
+		{
+			map_ao_to_vertices(*scene, &num_samples_per_instance[0], ao_samples, &ao_values[0], config.filter_mode, config.regularization_weight, vertex_ao);
+		}
 	}
 
 	// Rearranging result
