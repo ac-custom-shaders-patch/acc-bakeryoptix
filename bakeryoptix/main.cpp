@@ -913,8 +913,10 @@ struct file_processor
 		const auto ao_samples_ai_lanes = config.get(section, "AO_SAMPLES_AI_LANES", false);
 		if (ao_samples_pits || ao_samples_ai_lanes)
 		{
-			const auto ai_lanes_y_offset = config.get(section, "AO_SAMPLES_AI_LANES_Y_OFFSET", 0.5f);
+			const auto ai_lanes_y_offset = config.get(section, "AO_SAMPLES_AI_LANES_Y_OFFSET", std::vector<float>{0.5f});
 			const auto ai_lanes_sides = config.get(section, "AO_SAMPLES_AI_LANES_SIDES", 0.67f) / 2.f;
+			const auto ai_lanes_pitlane = config.get(section, "AO_SAMPLES_AI_LANES_PITLINE_WIDTH", 4.f) / 2.f;
+			const auto ai_lanes_min_distance = config.get(section, "AO_SAMPLES_AI_LANES_MIN_DISTANCE", 4.f);
 
 			PERF("Special: baking extra AO samples")
 
@@ -926,7 +928,6 @@ struct file_processor
 			mesh->material = std::make_shared<bake::Material>();
 			mesh->signature_point = bake::Vec3{};
 
-			static const auto distance_threshold = 4.f;
 			static const float2 poisson_disk[10] = {
 				optix::make_float2(-0.2027472f, -0.7174203f),
 				optix::make_float2(-0.4839617f, -0.1232477f),
@@ -959,14 +960,13 @@ struct file_processor
 
 				for (const auto& ai : {ai_fast, ai_pits})
 				{
-					auto dist = distance_threshold;
+					auto last_length = -ai_lanes_min_distance;
 					for (const auto& v : ai)
 					{
-						dist += v.length;
-						if (dist > distance_threshold)
+						if (v.length - last_length >= ai_lanes_min_distance)
 						{
 							mesh->vertices.push_back(v.point);
-							dist = 0.f;
+							last_length = v.length;
 						}
 					}
 				}
@@ -975,24 +975,29 @@ struct file_processor
 				{
 					for (const auto& ai : {ai_fast, ai_pits})
 					{
-						auto dist = distance_threshold;
+						auto last_length = -ai_lanes_min_distance;
 						for (auto i = 1U; i < ai.size(); i++)
 						{
-							dist += ai[i - 1].length;
-							if (dist > distance_threshold)
+							if (ai[i - 1].length - last_length >= ai_lanes_min_distance)
 							{
-								auto v0 = *(float3*)&ai[i - 1].point;
-								auto v1 = *(float3*)&ai[i].point;
+								const auto& v0 = *(float3*)&ai[i - 1].point;
+								const auto& v1 = *(float3*)&ai[i].point;
 								auto side = optix::normalize(optix::cross(v1 - v0, float3{0.f, 1.f, 0.f}));
 								auto s0 = (ai[i - 1].side_left + ai[i - 1].side_left) * ai_lanes_sides;
 								auto s1 = (ai[i - 1].side_right + ai[i - 1].side_right) * ai_lanes_sides;
-								if (s0 == 0) s0 = 4.f;
-								if (s1 == 0) s1 = 4.f;
-								auto p0 = (v0 + v1) / 2.f - side * s0;
-								auto p1 = (v0 + v1) / 2.f + side * s1;
-								mesh->vertices.push_back(*(bake::Vec3*)&p0);
-								mesh->vertices.push_back(*(bake::Vec3*)&p1);
-								dist = 0.f;
+								if (s0 == 0) s0 = ai_lanes_pitlane;
+								if (s1 == 0) s1 = ai_lanes_pitlane;
+								if (s0 > 0.f)
+								{
+									const auto p0 = (v0 + v1) / 2.f - side * s0;
+									mesh->vertices.push_back(*(bake::Vec3*)&p0);
+								}
+								if (s1 > 0.f)
+								{
+									const auto p1 = (v0 + v1) / 2.f + side * s1;
+									mesh->vertices.push_back(*(bake::Vec3*)&p1);
+								}
+								last_length = ai[i - 1].length;
 							}
 						}
 					}
@@ -1003,13 +1008,26 @@ struct file_processor
 			cfg_extra_ao.ground_offset_factor = 2.f;
 			cfg_extra_ao.disable_normals = true;
 			cfg_extra_ao.sample_on_points = true;
-			cfg_extra_ao.sample_offset = {0.f, ai_lanes_y_offset, 0.f};
 			cfg_extra_ao.use_ground_plane_blocker = false;
 			cfg_extra_ao.filter_mode = bake::VertexFilterMode::VERTEX_FILTER_AREA_BASED;
 
 			const auto extra_scene = std::make_shared<bake::Scene>(root);
 			extra_scene->receivers = {mesh};
-			ao.extend(bake_scene(extra_scene, cfg_extra_ao));
+
+			baked_data extra_ao;
+			for (auto offset : ai_lanes_y_offset)
+			{
+				cfg_extra_ao.sample_offset = {0.f, offset, 0.f};
+				if (extra_ao.entries.empty())
+				{
+					extra_ao = bake_scene(extra_scene, cfg_extra_ao);
+				}
+				else
+				{
+					extra_ao.max(bake_scene(extra_scene, cfg_extra_ao));
+				}
+			}
+			ao.extend(extra_ao);
 		}
 
 		// Generating AO for driver
@@ -1144,7 +1162,7 @@ struct file_processor
 				{
 					n->matrix_local = n->matrix_local_orig;
 				}
-				for (auto n : steering_wheel)
+				for (const auto& n : steering_wheel)
 				{
 					n->update_matrix();
 					n->resolve_skinned();

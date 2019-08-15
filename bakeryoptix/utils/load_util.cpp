@@ -71,8 +71,8 @@ static std::shared_ptr<bake::Mesh> load_kn5__read_mesh(load_data& target, const 
 
 	const auto material = target.materials[reader.read_uint()];
 	const auto layer = reader.read_uint();
-	const auto lod_in = reader.read_float();
-	const auto lod_out = reader.read_float();
+	mesh->lod_in = reader.read_float();
+	mesh->lod_out = reader.read_float();
 	reader.skip(sizeof(float3) + 4);
 
 	if (params.exclude_blockers_alpha_test && (material->alpha_tested || material->blend == bake::MaterialBlendMode::coverage)
@@ -86,8 +86,13 @@ static std::shared_ptr<bake::Mesh> load_kn5__read_mesh(load_data& target, const 
 	mesh->material = material;
 	mesh->signature_point = mesh->vertices[0];
 
+	if (mesh->lod_in > 0.f)
+	{
+		mesh->cast_shadows = false;
+	}
+
 	const auto is_renderable = reader.read_bool();
-	if (!is_renderable || lod_in > 0.f)
+	if (!is_renderable)
 	{
 		mesh->receive_shadows = false;
 		mesh->cast_shadows = false;

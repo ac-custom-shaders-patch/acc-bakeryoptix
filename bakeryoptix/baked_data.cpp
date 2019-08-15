@@ -52,12 +52,28 @@ void baked_data::save(const utils::path& destination, const save_params& params,
 			add_string(data, m->name);
 			add_bytes(data, int(4));
 			add_bytes(data, m->signature_point);
-			add_bytes(data, int(m->vertices.size()));
+
+			std::vector<float4> cleaned_up;
+			cleaned_up.reserve(m->vertices.size());
+			for (auto j = 0U; j < m->vertices.size(); j++)
+			{
+				cleaned_up.push_back(make_float4(m->vertices[j].x, m->vertices[j].y, m->vertices[j].z, ao.main_set[j].x));
+			}
+
+			/*add_bytes(data, int(m->vertices.size()));
 			for (auto j = 0U; j < m->vertices.size(); j++)
 			{
 				add_bytes(data, m->vertices[j]);
 				add_bytes(data, half_float::half(ao.main_set[j].x));
+			}*/
+
+			add_bytes(data, int(cleaned_up.size()));
+			for (const auto& j : cleaned_up)
+			{
+				add_bytes(data, *(bake::Vec3*)&j);
+				add_bytes(data, byte(clamp(powf(j.w * 1.1f, 1.1f) * 255, 0.f, 255.f)));
 			}
+
 			continue;
 		}
 
@@ -185,7 +201,7 @@ void baked_data::save(const utils::path& destination, const save_params& params,
 	}
 
 	remove(destination.string().c_str());
-	mz_zip_add_mem_to_archive_file_in_place(destination.string().c_str(), "Patch_v2.data",
+	mz_zip_add_mem_to_archive_file_in_place(destination.string().c_str(), "Patch_v3.data",
 		data.c_str(), data.size(), nullptr, 0, 0);
 
 	auto config = params.extra_config;
