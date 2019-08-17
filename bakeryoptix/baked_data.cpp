@@ -31,6 +31,72 @@ void add_string(std::basic_string<uint8_t>& d, const std::string& value)
 	}
 }
 
+struct values_recorder
+{
+	std::basic_string<uint8_t>& data;
+	const save_params& params;
+
+	enum alt_state : int
+	{
+		MAIN = 0,
+		SECONDARY = 1,
+		ALTERNATIVE = 2
+	};
+
+	byte adjust(float value) const
+	{
+		return byte(255.f * powf(optix::clamp((1.f - params.opacity + value * params.opacity) * params.brightness, 0.f, 1.f), params.gamma));
+	}
+
+	template <typename T>
+	void add_values(const std::shared_ptr<bake::Mesh>& m, int state, T fn)
+	{
+		const auto name = (state & ALTERNATIVE) ? "@@__ALT@:" + m->name : m->name;
+		data.reserve(data.size() + name.size() + m->vertices.size() * (params.use_v4 ? 1 : 2) + 24);
+		add_string(data, name);
+		add_bytes(data, int((state & SECONDARY) ? 3 : 1));
+		add_bytes(data, m->signature_point);
+		add_bytes(data, int(m->vertices.size()));
+		if (params.use_v4)
+		{
+			for (size_t j = 0U; j < m->vertices.size(); j++)
+			{
+				add_bytes(data, adjust(fn(j)));
+			}
+		}
+		else
+		{
+			for (size_t j = 0U; j < m->vertices.size(); j++)
+			{
+				add_bytes(data, half_float::half(fn(j)));
+			}
+		}
+	}
+
+	void add_values(const std::shared_ptr<bake::Mesh>& m, const baked_data_mesh& ao, int state)
+	{
+		if ((state & SECONDARY) == 0 && (state & ALTERNATIVE) == 0)
+		{
+			add_values(m, state, [=](size_t j) { return ao.main_set[j].x; });
+		}
+
+		if ((state & SECONDARY) != 0 && (state & ALTERNATIVE) == 0)
+		{
+			add_values(m, state, [=](size_t j) { return ao.main_set[j].y; });
+		}
+
+		if ((state & SECONDARY) == 0 && (state & ALTERNATIVE) != 0)
+		{
+			add_values(m, state, [=](size_t j) { return ao.alternative_set[j].x; });
+		}
+
+		if ((state & SECONDARY) != 0 && (state & ALTERNATIVE) != 0)
+		{
+			add_values(m, state, [=](size_t j) { return ao.alternative_set[j].y; });
+		}
+	}
+};
+
 void baked_data::save(const utils::path& destination, const save_params& params, bool store_secondary_set) const
 {
 	using namespace optix;
@@ -38,6 +104,8 @@ void baked_data::save(const utils::path& destination, const save_params& params,
 
 	std::vector<unsigned> nearbyes;
 	std::vector<bool> averaged;
+
+	values_recorder rec{data, params};
 
 	cout_progress progress{entries.size()};
 	for (const auto& entry : entries)
@@ -49,6 +117,7 @@ void baked_data::save(const utils::path& destination, const save_params& params,
 
 		if (m->name == "@@__EXTRA_AO@")
 		{
+			data.reserve(data.size() + m->name.size() + m->vertices.size() * 11 + 24);
 			add_string(data, m->name);
 			add_bytes(data, int(4));
 			add_bytes(data, m->signature_point);
@@ -152,65 +221,36 @@ void baked_data::save(const utils::path& destination, const save_params& params,
 			}
 		}
 
-		add_string(data, m->name);
-		add_bytes(data, int(1));
-		add_bytes(data, m->signature_point);
-		add_bytes(data, int(m->vertices.size()));
-		for (auto j = 0U; j < m->vertices.size(); j++)
-		{
-			add_bytes(data, half_float::half(ao.main_set[j].x));
-		}
-
+		rec.add_values(m, ao, values_recorder::MAIN);
 		if (store_secondary_set)
 		{
-			// std::cout << "Store secondary set: " << m->name << "\n";
-			add_string(data, m->name);
-			add_bytes(data, int(3));
-			add_bytes(data, m->signature_point);
-			add_bytes(data, int(m->vertices.size()));
-			for (auto j = 0U; j < m->vertices.size(); j++)
-			{
-				add_bytes(data, half_float::half(ao.main_set[j].y));
-			}
+			rec.add_values(m, ao, values_recorder::SECONDARY);
 		}
 
 		if (!ao.alternative_set.empty())
 		{
-			add_string(data, "@@__ALT@:" + m->name);
-			add_bytes(data, int(1));
-			add_bytes(data, m->signature_point);
-			add_bytes(data, int(m->vertices.size()));
-			for (auto j = 0U; j < m->vertices.size(); j++)
-			{
-				add_bytes(data, half_float::half(ao.alternative_set[j].x));
-			}
-
+			rec.add_values(m, ao, values_recorder::ALTERNATIVE);
 			if (store_secondary_set)
 			{
-				// std::cout << "Store secondary set: " << m->name << "\n";
-				add_string(data, "@@__ALT@:" + m->name);
-				add_bytes(data, int(3));
-				add_bytes(data, m->signature_point);
-				add_bytes(data, int(m->vertices.size()));
-				for (auto j = 0U; j < m->vertices.size(); j++)
-				{
-					add_bytes(data, half_float::half(ao.alternative_set[j].y));
-				}
+				rec.add_values(m, ao, values_recorder::ALTERNATIVE | values_recorder::SECONDARY);
 			}
 		}
 	}
 
 	remove(destination.string().c_str());
-	mz_zip_add_mem_to_archive_file_in_place(destination.string().c_str(), "Patch_v3.data",
-		data.c_str(), data.size(), nullptr, 0, 0);
+	mz_zip_add_mem_to_archive_file_in_place(destination.string().c_str(), params.use_v4 ? "Patch_v4.data" : "Patch_v3.data",
+		data.c_str(), data.size(), nullptr, 0, MZ_BEST_COMPRESSION);
 
 	auto config = params.extra_config;
-	config.set("LIGHTING", "BRIGHTNESS", params.brightness);
-	config.set("LIGHTING", "GAMMA", params.gamma);
-	config.set("LIGHTING", "OPACITY", params.opacity);
+	if (!params.use_v4)
+	{
+		config.set("LIGHTING", "BRIGHTNESS", params.brightness);
+		config.set("LIGHTING", "GAMMA", params.gamma);
+		config.set("LIGHTING", "OPACITY", params.opacity);
+	}
 	const auto config_data = config.to_string();
 	mz_zip_add_mem_to_archive_file_in_place(destination.string().c_str(), "Config.ini",
-		config_data.c_str(), config_data.size(), nullptr, 0, 0);
+		config_data.c_str(), config_data.size(), nullptr, 0, MZ_BEST_COMPRESSION);
 }
 
 baked_data_mesh_set replace_primary_mesh_data(const baked_data_mesh_set& b, const baked_data_mesh_set& base)

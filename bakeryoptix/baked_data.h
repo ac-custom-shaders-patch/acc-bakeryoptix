@@ -29,6 +29,7 @@ struct save_params
 	float gamma;
 	float opacity;
 	utils::ini_file extra_config;
+	bool use_v4;
 };
 
 struct baked_data

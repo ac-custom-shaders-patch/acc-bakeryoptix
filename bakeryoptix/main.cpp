@@ -337,7 +337,7 @@ struct file_processor
 				}
 			}
 		}
-
+		
 		// General options
 		cfg_bake.use_cuda = config.get("GENERAL", "CPU_ONLY", std::string("AUTO")) == "AUTO" ? is_cuda_available : config.get("GENERAL", "CPU_ONLY", false);
 		cfg_load.exclude_patch = config.get(section, "EXCLUDE_FROM_BAKING", std::vector<std::string>());
@@ -359,6 +359,7 @@ struct file_processor
 			: bake::VERTEX_FILTER_AREA_BASED;
 		cfg_bake.regularization_weight = config.get(section, "FILTER_REGULARIZATION_WEIGHT", 0.1f);
 
+		cfg_save.use_v4 = config.get("GENERAL", "USE_V4", std::string("AUTO")) == "AUTO" ? cfg_bake.use_cuda : config.get("GENERAL", "USE_V4", true);
 		cfg_save.averaging_threshold = config.get(section, "AVERAGING_THRESHOLD", 0.f);
 		cfg_save.averaging_cos_threshold = config.get(section, "AVERAGING_COS_THRESHOLD", 0.95f);
 		cfg_save.brightness = config.get(section, "BRIGHTNESS", 1.02f);
@@ -367,7 +368,7 @@ struct file_processor
 
 		for (const auto& s : config.sections)
 		{
-			if (s.first != "GENERAL" && s.first.find("MODE_") != 0)
+			if (s.first != "GENERAL" && s.first.find("MODE_") != 0 && s.first.find("SPECIFIC_") != 0)
 			{
 				cfg_save.extra_config.sections[s.first] = s.second;
 			}
@@ -659,21 +660,18 @@ struct file_processor
 		{
 			if (!exterior_materials.empty())
 			{
-				cfg_save.extra_config.set("SHADER_REPLACEMENT_0_FIX_EXT", "TAGS", std::string("VAO_PATCH"));
 				cfg_save.extra_config.set("SHADER_REPLACEMENT_0_FIX_EXT", "MATERIALS", to_vector(exterior_materials));
 				cfg_save.extra_config.set("SHADER_REPLACEMENT_0_FIX_EXT", "PROP_0", std::vector<std::string>{"ksAmbient", "*" + std::to_string(exterior_mult)});
 			}
 
 			if (!interior_materials.empty())
 			{
-				cfg_save.extra_config.set("SHADER_REPLACEMENT_0_FIX_INT", "TAGS", std::string("VAO_PATCH"));
 				cfg_save.extra_config.set("SHADER_REPLACEMENT_0_FIX_INT", "MATERIALS", to_vector(interior_materials));
 				cfg_save.extra_config.set("SHADER_REPLACEMENT_0_FIX_INT", "PROP_0", std::vector<std::string>{"ksAmbient", "*" + std::to_string(interior_mult)});
 			}
 
 			if (!driver_materials.empty())
 			{
-				cfg_save.extra_config.set("SHADER_REPLACEMENT_0_FIX_DRIVER", "TAGS", std::string("VAO_PATCH"));
 				cfg_save.extra_config.set("SHADER_REPLACEMENT_0_FIX_DRIVER", "MATERIALS", to_vector(driver_materials));
 				cfg_save.extra_config.set("SHADER_REPLACEMENT_0_FIX_DRIVER", "PROP_0", std::vector<std::string>{"ksAmbient", "*" + std::to_string(driver_mult)});
 			}

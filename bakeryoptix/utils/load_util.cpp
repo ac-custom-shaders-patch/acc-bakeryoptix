@@ -378,7 +378,7 @@ std::shared_ptr<bake::Animation> load_ksanim(const utils::path& filename, bool i
 		{
 			if (version == 1)
 			{
-				entry.frames[j] = reader.read_f4x4();
+				entry.frames[j] = reader.read_f4x4().transpose();
 			}
 			else
 			{
