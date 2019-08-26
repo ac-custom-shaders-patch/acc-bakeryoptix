@@ -168,6 +168,7 @@
     <ClCompile Include="bake_wrap.cpp" />
     <ClCompile Include="utils\alphanum.cpp" />
     <ClCompile Include="utils\binary_reader.cpp" />
+    <ClCompile Include="utils\custom_crash_handler.cpp" />
     <ClCompile Include="utils\filesystem.cpp" />
     <ClCompile Include="utils\ini_file.cpp" />
     <ClCompile Include="utils\load_util.cpp" />
@@ -445,6 +446,7 @@
     <ClInclude Include="eigen\Eigen\src\UmfPackSupport\UmfPackSupport.h" />
     <ClInclude Include="utils\alphanum.h" />
     <ClInclude Include="utils\binary_reader.h" />
+    <ClInclude Include="utils\custom_crash_handler.h" />
     <ClInclude Include="utils\dbg_output.h" />
     <ClInclude Include="utils\filesystem.h" />
     <ClInclude Include="utils\half.h" />

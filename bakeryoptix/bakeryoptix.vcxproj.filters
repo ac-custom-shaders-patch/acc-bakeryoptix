@@ -72,6 +72,9 @@
     <ClCompile Include="utils\alphanum.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="utils\custom_crash_handler.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="bake_ao_optix_prime.h">
@@ -918,6 +921,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="utils\alphanum.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\custom_crash_handler.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

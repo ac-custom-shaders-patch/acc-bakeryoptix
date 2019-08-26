@@ -181,6 +181,7 @@ void bake::ao_optix_prime(
 	{
 		const auto sample_offset = batch_idx * batch_size;
 		const auto num_samples = std::min(batch_size, ao_samples.num_samples - sample_offset);
+		if (num_samples == 0) continue;
 
 		// Copy all necessary data to device
 		const auto buffer_type = use_cuda ? RTP_BUFFER_TYPE_CUDA_LINEAR : RTP_BUFFER_TYPE_HOST;

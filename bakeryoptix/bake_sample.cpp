@@ -169,9 +169,8 @@ void sample_instance(
 {
 	// Setup access to mesh data
 	const auto xform_invtrans = xform.inverse().transpose();
-	assert(ao_samples.num_samples >= mesh->num_triangles*min_samples_per_triangle);
-	assert(mesh->vertices);
-	assert(mesh->num_vertices);
+	assert(ao_samples.num_samples >= mesh->triangles.size()*min_samples_per_triangle);
+	assert(mesh->vertices.size());
 	assert(ao_samples.sample_positions);
 	assert(ao_samples.sample_normals);
 	assert(ao_samples.sample_infos);

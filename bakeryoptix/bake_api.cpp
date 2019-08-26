@@ -177,7 +177,7 @@ bool Mesh::matches(const std::string& query) const
 
 void Bone::solve(const std::shared_ptr<Node>& root)
 {
-	node = root->find_node(name);
+	node = root->find_node(Filter({name}));
 }
 
 Vec3 skinned_pos(const Vec3& pos, const Vec4& weight, const Vec4& bone_id, const std::vector<Matrix4x4>& bones, const Node* node)
@@ -224,7 +224,7 @@ void SkinnedMesh::resolve(const Node* node)
 	for (auto i = 0U; i < bones.size(); i++)
 	{
 		auto& b = bones[i];
-		b.node = node->find_node(b.name);
+		b.node = node->find_node(Filter({b.name}));
 		if (b.node)
 		{
 			bones_[i] = to_matrix(b.node->matrix * b.tranform).transpose();
@@ -240,6 +240,8 @@ void SkinnedMesh::resolve(const Node* node)
 	{
 		vertices[i] = skinned_pos(vertices_orig[i], weights[i], bone_ids[i], bones_, node);
 	}
+
+	matrix = NodeTransformation::identity();
 }
 
 Node::Node(const std::string& name, const NodeTransformation& matrix)
@@ -273,7 +275,7 @@ std::shared_ptr<Mesh> Node::find_mesh(const std::string& name)
 	return nullptr;
 }
 
-static void find_meshes_inner(Node* node, std::vector<std::shared_ptr<Mesh>>& result, const std::vector<std::string>& names)
+static void find_meshes_inner(const Node* node, std::vector<std::shared_ptr<Mesh>>& result, const Filter& names)
 {
 	for (const auto& c : node->children)
 	{
@@ -287,7 +289,7 @@ static void find_meshes_inner(Node* node, std::vector<std::shared_ptr<Mesh>>& re
 			auto m = std::dynamic_pointer_cast<Mesh>(c);
 			if (m)
 			{
-				for (const auto& name : names)
+				for (const auto& name : names.items)
 				{
 					if (m && m->matches(name))
 					{
@@ -300,14 +302,14 @@ static void find_meshes_inner(Node* node, std::vector<std::shared_ptr<Mesh>>& re
 	}
 }
 
-std::vector<std::shared_ptr<Mesh>> Node::find_meshes(const std::vector<std::string>& names)
+std::vector<std::shared_ptr<Mesh>> Node::find_meshes(const Filter& names) const
 {
 	std::vector<std::shared_ptr<Mesh>> result;
 	find_meshes_inner(this, result, names);
 	return result;
 }
 
-std::vector<std::shared_ptr<Mesh>> Node::find_any_meshes(const std::vector<std::string>& names)
+std::vector<std::shared_ptr<Mesh>> Node::find_any_meshes(const Filter& names) const
 {
 	auto result = find_meshes(names);
 	for (const auto& n : find_nodes(names))
@@ -317,7 +319,7 @@ std::vector<std::shared_ptr<Mesh>> Node::find_any_meshes(const std::vector<std::
 	return result;
 }
 
-std::shared_ptr<Node> Node::find_node(const std::string& name) const
+/*std::shared_ptr<Node> Node::find_node(const std::string& name) const
 {
 	for (const auto& c : children)
 	{
@@ -342,16 +344,16 @@ std::shared_ptr<Node> Node::find_node(const std::string& name) const
 		}
 	}
 	return nullptr;
-}
+}*/
 
-static void find_nodes_inner(Node* node, std::vector<std::shared_ptr<Node>>& result, const std::vector<std::string>& names)
+static void find_nodes_inner(const Node* node, std::vector<std::shared_ptr<Node>>& result, const Filter& names)
 {
 	for (const auto& c : node->children)
 	{
 		auto n = std::dynamic_pointer_cast<Node>(c);
 		if (n)
 		{
-			for (const auto& name : names)
+			for (const auto& name : names.items)
 			{
 				if (std_ext::match(name, n->name))
 				{
@@ -373,14 +375,14 @@ static void find_nodes_inner(Node* node, std::vector<std::shared_ptr<Node>>& res
 	}
 }
 
-std::vector<std::shared_ptr<Node>> Node::find_nodes(const std::vector<std::string>& names)
+std::vector<std::shared_ptr<Node>> Node::find_nodes(const Filter& names) const
 {
 	std::vector<std::shared_ptr<Node>> result;
 	find_nodes_inner(this, result, names);
 	return result;
 }
 
-bool Node::set_active(const std::vector<std::string>& names, const bool value)
+bool Node::set_active(const Filter& names, const bool value) const
 {
 	auto any = false;
 	for (const auto& n : find_nodes(names))
@@ -498,7 +500,7 @@ void Animation::init(const std::shared_ptr<Node>& root)
 	{
 		for (auto& e : entries)
 		{
-			e.node = root->find_node(e.name);
+			e.node = root->find_node(Filter({e.name}));
 		}
 		last_root_ = root.get();
 	}
@@ -562,24 +564,30 @@ Scene::Scene(const std::vector<std::shared_ptr<Node>>& nodes)
 	}
 }
 
-void HierarchyNode::align(const std::shared_ptr<Node>& root)
+void align_hierarchy(const HierarchyNode* that, const std::shared_ptr<Node>& root, const NodeTransformation& offset)
 {
-	auto target = root->name == name ? root : root->find_node(name);
+	auto target = root->name == that->name ? root : root->find_node(Filter({that->name}));
 	if (target)
 	{
-		target->matrix_local = target->matrix_local_orig = matrix_local;
-		for (const auto& c : children)
+		target->matrix_local = target->matrix_local_orig = that->matrix_local * offset;
+		for (const auto& c : that->children)
 		{
-			c->align(target);
+			align_hierarchy(c.get(), target, offset);
 		}
 	}
 	else
 	{
-		for (const auto& c : children)
+		const auto offset_c = that->matrix_local * offset;
+		for (const auto& c : that->children)
 		{
-			c->align(root);
+			align_hierarchy(c.get(), root, offset_c);
 		}
 	}
+}
+
+void HierarchyNode::align(const std::shared_ptr<Node>& root) const
+{
+	align_hierarchy(this, root, NodeTransformation::identity());
 }
 
 void bake::map_ao_to_vertices(

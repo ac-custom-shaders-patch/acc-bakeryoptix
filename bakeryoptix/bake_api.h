@@ -186,16 +186,27 @@ namespace bake
 		void resolve(const Node* node);
 	};
 
+	struct Filter
+	{
+		std::vector<std::string> items;
+		explicit Filter(std::vector<std::string> items) : items(std::move(items)) { }
+	};
+
 	struct Node : NodeBase
 	{
 		Node(const std::string& name, const NodeTransformation& matrix = NodeTransformation::identity());
 		std::shared_ptr<Mesh> find_mesh(const std::string& name);
-		std::vector<std::shared_ptr<Mesh>> find_meshes(const std::vector<std::string>& names);
-		std::vector<std::shared_ptr<Mesh>> find_any_meshes(const std::vector<std::string>& names);
-		std::shared_ptr<Node> find_node(const std::string& name) const;
-		std::vector<std::shared_ptr<Node>> find_nodes(const std::vector<std::string>& names);
-		bool set_active(const std::vector<std::string>& names, const bool value);
+		std::vector<std::shared_ptr<Mesh>> find_meshes(const Filter& names) const;
+		std::vector<std::shared_ptr<Mesh>> find_any_meshes(const Filter& names) const;
+		std::vector<std::shared_ptr<Node>> find_nodes(const Filter& names) const;
+		bool set_active(const Filter& names, const bool value) const;
 		void add_child(const std::shared_ptr<NodeBase>& node);
+
+		std::shared_ptr<Node> find_node(const Filter& filter) const
+		{
+			const auto nodes = find_nodes(filter);
+			return nodes.empty() ? nullptr : nodes[0];
+		}
 
 		NodeTransformation matrix_local;
 		NodeTransformation matrix_local_orig;
@@ -250,7 +261,7 @@ namespace bake
 			: name(std::move(name)), matrix_local(matrix)
 		{ }
 
-		void align(const std::shared_ptr<bake::Node>& root);
+		void align(const std::shared_ptr<bake::Node>& root) const;
 	};
 
 	struct AILanePoint
