@@ -371,6 +371,8 @@ struct file_processor
 		resolving_cockpit_hr = config.get(section, "COCKPIT_HR_NODES", std::vector<std::string>{"COCKPIT_HR"});
 		resolving_cockpit_lr = config.get(section, "COCKPIT_LR_NODES", std::vector<std::string>{"COCKPIT_LR"});
 
+		cfg_bake.sample_on_points = false;
+		cfg_bake.disable_normals = false;
 		cfg_bake.num_samples = config.get(section, "SAMPLES", std::string("AUTO")) == "AUTO" ? 0 : config.get(section, "SAMPLES", 0);
 		cfg_bake.min_samples_per_face = config.get(section, "MIN_SAMPLES_PER_FACE", 4);
 		cfg_bake.num_rays = config.get(section, "RAYS_PER_SAMPLE", 64);
@@ -623,39 +625,37 @@ struct file_processor
 		return bake_scene(scene, scene->blockers, config, verbose);
 	}
 
-	baked_data bake_scene(const std::shared_ptr<Scene>& scene, const std::vector<std::shared_ptr<Mesh>>& blockers,
+	baked_data bake_scene(const std::shared_ptr<Scene>& scene, const SceneBlockers& blockers,
 		const bake_params& config, bool verbose = false)
 	{
-		if (!reduced_ground_params.empty())
+		if (reduced_ground_params.empty())
 		{
-			auto scene_adj = std::make_shared<Scene>(*scene);
-			for (const auto& r : reduced_ground_params)
-			{
-				if (r.factor == 1.f)
-				{
-					scene_adj->receivers -= r.meshes;
-				}
-			}
-
-			auto result = bake_wrap::bake_scene(scene_adj, blockers, config, verbose);
-			auto config_noground = config;
-			config_noground.use_ground_plane_blocker = false;
-
-			for (const auto& r : reduced_ground_params)
-			{
-				scene_adj->receivers = scene->receivers & r.meshes;
-				if (!scene_adj->receivers.empty())
-				{
-					result.max(bake_wrap::bake_scene(scene_adj, blockers, config_noground, verbose), r.factor, {}, true);
-				}
-			}
-
-			return result;
+			return bake_wrap::bake_scene(scene, blockers.full, config, verbose);
 		}
-		else
+		
+		auto scene_adj = std::make_shared<Scene>(*scene);
+		for (const auto& r : reduced_ground_params)
 		{
-			return bake_wrap::bake_scene(scene, blockers, config, verbose);
+			if (r.factor == 1.f)
+			{
+				scene_adj->receivers -= r.meshes;
+			}
 		}
+
+		auto result = bake_wrap::bake_scene(scene_adj, blockers.full, config, verbose);
+		auto config_noground = config;
+		config_noground.use_ground_plane_blocker = false;
+
+		for (const auto& r : reduced_ground_params)
+		{
+			scene_adj->receivers = scene->receivers & r.meshes;
+			if (!scene_adj->receivers.empty())
+			{
+				result.brighten(bake_wrap::bake_scene(scene_adj, blockers.cut, config_noground, verbose), r.factor);
+			}
+		}
+
+		return result;
 	}
 
 	void run()
@@ -685,21 +685,6 @@ struct file_processor
 
 		auto ao = bake_stuff(root);
 
-		// Generating alternative AO with driver shadows
-		if (FEATURE_ACTIVE("DRIVER_CASTS_SHADOWS"))
-		{
-			const auto driver_shadow_targets = root->find_nodes(resolve_filter({"@COCKPIT_HR", "@COCKPIT_LR"}));
-			const auto driver_shadow_blockers = std::make_shared<Scene>(root)->blockers + std::make_shared<Scene>(driver_root)->blockers;
-			const auto root_scene = std::make_shared<Scene>(driver_shadow_targets);
-			for (const auto& n : root->find_nodes(resolve_filter({"PAD_UP", "PAD_DOWN", "STEER_HR", "STEER_LR"})))
-			{
-				root_scene->receivers -= n->get_meshes();
-			}
-			auto ao_alt = bake_scene(root_scene, driver_shadow_blockers, cfg_bake, true);
-			bake_animations(root, driver_shadow_targets, driver_shadow_blockers, cfg_bake, ao_alt);
-			ao.set_alternative_set(ao_alt);
-		}
-
 		// Saving result
 		{
 			if (!exterior_materials.empty())
@@ -727,7 +712,7 @@ struct file_processor
 	}
 
 	void bake_animations(const std::shared_ptr<Node>& moving_root, const std::vector<std::shared_ptr<Node>>& targets,
-		const std::vector<std::shared_ptr<Mesh>>& blockers, const bake_params& cfg_bake, baked_data& ao, const std::string& comment = "",
+		const SceneBlockers& blockers, const bake_params& cfg_bake, baked_data& ao, const std::string& comment = "",
 		bool verbose = true, bool apply_to_both_sets = false)
 	{
 		bake_animations(moving_root, targets, blockers, animation_instances, animations_steps, animations_mixing, animations_mixing_inverse,
@@ -735,7 +720,7 @@ struct file_processor
 	}
 
 	void bake_animations(const std::shared_ptr<Node>& moving_root, const std::vector<std::shared_ptr<Node>>& targets,
-		const std::vector<std::shared_ptr<Mesh>>& blockers,
+		const SceneBlockers& blockers,
 		std::vector<std::shared_ptr<Animation>>& animation_instances, const std::vector<float>& animations_steps, const mixing_params& animations_mixing,
 		const std::vector<std::shared_ptr<Mesh>>& animations_mixing_inverse, const bake_params& cfg_bake, baked_data& ao, const std::string& comment = "",
 		bool verbose = true, bool apply_to_both_sets = false)
@@ -1300,12 +1285,30 @@ struct file_processor
 			}
 		}
 
+		// Generating alternative AO with driver shadows
+		if (FEATURE_ACTIVE("DRIVER_CASTS_SHADOWS"))
+		{
+			const auto driver_shadow_targets = root->find_nodes(resolve_filter({"@COCKPIT_HR", "@COCKPIT_LR"}));
+			const auto driver_shadow_blockers = std::make_shared<Scene>(root)->blockers + std::make_shared<Scene>(driver_root)->blockers;
+			const auto driver_shadow_targets_scene = std::make_shared<Scene>(driver_shadow_targets);
+			for (const auto& n : root->find_nodes(resolve_filter({"PAD_UP", "PAD_DOWN", "STEER_HR", "STEER_LR"})))
+			{
+				driver_shadow_targets_scene->receivers -= n->get_meshes();
+			}
+			
+			auto ao_alt = bake_scene(driver_shadow_targets_scene, driver_shadow_blockers, cfg_bake, true);
+			bake_animations(root, driver_shadow_targets, driver_shadow_blockers, cfg_bake, ao_alt);
+			ao.set_alternative_set(ao_alt);
+		}
+
+		const auto car_mode = is_car(input_file);
 		for (auto i = 0, j = 100; i < j; i++)
 		{
 			std::vector<std::string> names;
 			auto mult = config.get(section, "EXTRA_ADJUSTMENT_" + std::to_string(i) + "_MULT", 1.f);
 			auto offset = config.get(section, "EXTRA_ADJUSTMENT_" + std::to_string(i) + "_OFFSET", 0.f);
-			auto exp = config.get(section, "EXTRA_ADJUSTMENT_" + std::to_string(i) + "_EXP", 1.f);
+			auto exp = config.get(section, "EXTRA_ADJUSTMENT_" + std::to_string(i) + "_GAMMA", 
+				config.get(section, "EXTRA_ADJUSTMENT_" + std::to_string(i) + "_EXP", 1.f));
 			auto primary_only = config.get(section, "EXTRA_ADJUSTMENT_" + std::to_string(i) + "_PRIMARY_ONLY", false);
 			if (config.try_get(section, "EXTRA_ADJUSTMENT_" + std::to_string(i) + "_NAMES", names)
 				&& (mult != 1.f || offset != 0.f || exp != 1.f))
@@ -1316,9 +1319,12 @@ struct file_processor
 				for (const auto& r : lod_roots)
 				{
 					dimmed_meshes += r->find_meshes(resolve_filter(names));
-					for (const auto& node : r->find_nodes(resolve_filter(names)))
+					if (car_mode)
 					{
-						dimmed_meshes += node->get_meshes();
+						for (const auto& node : r->find_nodes(resolve_filter(names)))
+						{
+							dimmed_meshes += node->get_meshes();
+						}
 					}
 				}
 
@@ -1328,6 +1334,14 @@ struct file_processor
 					if (f != ao.entries.end())
 					{
 						for (auto& e : f->second.main_set)
+						{
+							e.x = powf(optix::clamp(e.x, 0.f, 1.f), exp) * mult + offset;
+							if (!primary_only)
+							{
+								e.y = powf(optix::clamp(e.y, 0.f, 1.f), exp) * mult + offset;
+							}
+						}
+						for (auto& e : f->second.alternative_set)
 						{
 							e.x = powf(optix::clamp(e.x, 0.f, 1.f), exp) * mult + offset;
 							if (!primary_only)

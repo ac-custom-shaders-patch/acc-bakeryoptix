@@ -539,7 +539,49 @@ bool Animation::apply_all(const std::shared_ptr<Node>& root, const std::vector<s
 	return ret;
 }
 
+SceneBlockers SceneBlockers::operator+(const SceneBlockers& r) const
+{
+	return {full + r.full, cut + r.cut};
+}
+
+SceneBlockers& SceneBlockers::operator+=(const SceneBlockers& r)
+{
+	full += r.full;
+	cut += r.cut;
+	return *this;
+}
+
+SceneBlockers& SceneBlockers::operator-=(const SceneBlockers& r)
+{
+	full -= r.full;
+	cut -= r.cut;
+	return *this;
+}
+
+SceneBlockers& SceneBlockers::operator-=(const std::vector<std::shared_ptr<Mesh>>& r)
+{
+	full -= r;
+	cut -= r;
+	return *this;
+}
+
 Scene::Scene(const std::shared_ptr<Node>& root) : Scene(root ? std::vector<std::shared_ptr<Node>>{root} : std::vector<std::shared_ptr<Node>>{}) {}
+
+static void ensure_has_something(std::vector<std::shared_ptr<Mesh>>& blockers)
+{
+	if (!blockers.empty()) return;
+
+	const auto m = std::make_shared<Mesh>();
+	m->vertices.push_back({0.f, 0.f, 0.f});
+	m->vertices.push_back({0.f, 0.f, 0.f});
+	m->vertices.push_back({0.f, 0.f, 0.f});
+	m->normals.push_back({0.f, 1.f, 0.f});
+	m->normals.push_back({0.f, 1.f, 0.f});
+	m->normals.push_back({0.f, 1.f, 0.f});
+	m->triangles.push_back({0, 1, 2});
+	m->cast_shadows = true;
+	blockers.push_back(m);
+}
 
 Scene::Scene(const std::vector<std::shared_ptr<Node>>& nodes)
 {
@@ -552,10 +594,43 @@ Scene::Scene(const std::vector<std::shared_ptr<Node>>& nodes)
 		{
 			if (!m->visible || !m->active) continue;
 			if (m->receive_shadows) receivers.push_back(m);
-			if (m->cast_shadows) blockers.push_back(m);
 
 			const auto& x = to_matrix(m->matrix).transpose();
-			for (auto& v : m->vertices)
+			if (m->cast_shadows)
+			{
+				blockers.full.push_back(m);
+				blockers.cut.push_back(m);
+
+				/*const auto m_cut = std::make_shared<Mesh>(*m);
+				auto m_cut_any = false;
+				m_cut->triangles.clear();
+				for (const auto& v : m->triangles)
+				{
+					if (transform_pos(m->vertices[v.a], x).y < 0.9f
+						&& transform_pos(m->vertices[v.b], x).y < 0.9f
+						&& transform_pos(m->vertices[v.c], x).y < 0.9f)
+					{
+						m_cut->triangles.push_back(v);
+					}
+					else
+					{
+						m_cut_any = true;
+					}
+				}
+				if (!m_cut_any)
+				{
+					blockers.cut.push_back(m);
+				}
+				else if (!m_cut->triangles.empty())
+				{
+					blockers.cut.push_back(m_cut);
+				}*/
+			}
+
+			ensure_has_something(blockers.cut);
+			ensure_has_something(blockers.full);
+			
+			for (const auto& v : m->vertices)
 			{
 				const auto w = transform_pos(v, x);
 				expand_bbox(bbox_min, bbox_max, &w.x);

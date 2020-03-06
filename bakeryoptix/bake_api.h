@@ -239,13 +239,24 @@ namespace bake
 		Node* last_root_{};
 	};
 
+	struct SceneBlockers
+	{
+		std::vector<std::shared_ptr<Mesh>> full;
+		std::vector<std::shared_ptr<Mesh>> cut;
+
+		SceneBlockers operator+(const SceneBlockers& r) const;
+		SceneBlockers& operator+=(const SceneBlockers& r);
+		SceneBlockers& operator-=(const SceneBlockers& r);
+		SceneBlockers& operator-=(const std::vector<std::shared_ptr<Mesh>>& r);
+	};
+
 	struct Scene
 	{
 		Scene(const std::shared_ptr<Node>& root);
 		Scene(const std::vector<std::shared_ptr<Node>>& nodes);
 
 		std::vector<std::shared_ptr<Mesh>> receivers;
-		std::vector<std::shared_ptr<Mesh>> blockers;
+		SceneBlockers blockers;
 
 		float bbox_min[3]{FLT_MAX, FLT_MAX, FLT_MAX};
 		float bbox_max[3]{-FLT_MAX, -FLT_MAX, -FLT_MAX};

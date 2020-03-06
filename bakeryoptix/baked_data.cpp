@@ -253,78 +253,93 @@ void baked_data::save(const utils::path& destination, const save_params& params,
 		config_data.c_str(), config_data.size(), nullptr, 0, MZ_BEST_COMPRESSION);
 }
 
-baked_data_mesh_set replace_primary_mesh_data(const baked_data_mesh_set& b, const baked_data_mesh_set& base)
+template <typename TPrim>
+void combine_sets(baked_data_mesh_set& dst, const baked_data_mesh_set& src, const TPrim& fn, bool apply_to_both)
 {
-	baked_data_mesh_set result;
-	if (b.size() != base.size())
+	if (src.size() != dst.size())
 	{
 		std::cerr << "\n[ ERROR: Sizes do not match. ]\n";
 		exit(1);
 	}
-	result.resize(b.size());
-	for (auto i = 0U; i < b.size(); i++)
+	for (auto i = 0U; i < src.size(); i++)
 	{
-		result[i].x = b[i].x;
-		result[i].y = base[i].y;
+		dst[i].x = fn(dst[i].x, src[i].x);
+		if (apply_to_both) dst[i].y = fn(dst[i].y, src[i].y);
 	}
-	return result;
 }
 
-baked_data_mesh_set merge_mesh_data(const baked_data_mesh_set& b, const baked_data_mesh_set& base, float mult_b, bool use_min, bool merge_x, bool merge_y)
+template <typename TPrim>
+void combine_sets_entries(std::map<std::shared_ptr<bake::Mesh>, baked_data_mesh>& entries, const baked_data& b, const TPrim& fn, bool apply_to_both)
 {
-	baked_data_mesh_set result;
-	if (b.size() != base.size())
+	for (const auto& p : b.entries)
 	{
-		std::cerr << "\n[ ERROR: Sizes do not match. ]\n";
-		exit(1);
+		auto f = entries.find(p.first);
+		if (f == entries.end())
+		{
+			entries[p.first].main_set = p.second.main_set;
+		}
+		else
+		{
+			combine_sets(f->second.main_set, p.second.main_set, fn, apply_to_both);
+		}
 	}
-	result.resize(b.size());
-	for (auto i = 0U; i < b.size(); i++)
-	{
-		result[i].x = merge_x ? (use_min ? std::min(b[i].x * mult_b, base[i].x) : std::max(b[i].x * mult_b, base[i].x)) : base[i].x;
-		result[i].y = merge_y ? (use_min ? std::min(b[i].y * mult_b, base[i].y) : std::max(b[i].y * mult_b, base[i].y)) : base[i].y;
-	}
-	return result;
 }
 
-baked_data_mesh_set average_mesh_data(const baked_data_mesh_set& b, const baked_data_mesh_set& base, float mult_b, float mult_base, bool merge_x, bool merge_y)
+template <typename TPrim>
+void combine_sets_entries(std::map<std::shared_ptr<bake::Mesh>, baked_data_mesh>& entries, const baked_data& b, const TPrim& fn_merge)
 {
-	baked_data_mesh_set result;
-	if (b.size() != base.size())
+	for (const auto& p : b.entries)
 	{
-		std::cerr << "\n[ ERROR: Sizes do not match. ]\n";
-		exit(1);
+		auto f = entries.find(p.first);
+		if (f == entries.end())
+		{
+			entries[p.first].main_set = p.second.main_set;
+		}
+		else
+		{
+			fn_merge(p.first, f->second.main_set, p.second.main_set);
+		}
 	}
-	result.resize(b.size());
-	for (auto i = 0U; i < b.size(); i++)
-	{
-		result[i].x = merge_x ? (b[i].x * mult_b + base[i].x * mult_base) : base[i].x;
-		result[i].y = merge_y ? (b[i].y * mult_b + base[i].y * mult_base) : base[i].y;
-	}
-	return result;
 }
 
 void baked_data::replace_primary(const baked_data& b)
 {
-	for (const auto& p : b.entries)
-	{
-		auto f = entries.find(p.first);
-		entries[p.first].main_set = f == entries.end()
-			? p.second.main_set
-			: replace_primary_mesh_data(p.second.main_set, f->second.main_set);
-	}
+	combine_sets_entries(entries, b, [](float d, float s) { return s; }, false);
+}
+
+void baked_data::brighten(const baked_data& b, float brighten_k)
+{
+	combine_sets_entries(entries, b, [=](float d, float s) { return d + std::max(s - d, 0.f) * brighten_k; }, true);
 }
 
 void baked_data::max(const baked_data& b, float mult_b, const std::vector<std::shared_ptr<bake::Mesh>>& inverse, bool apply_to_both_sets)
 {
-	for (const auto& p : b.entries)
+	combine_sets_entries(entries, b, [=](const std::shared_ptr<bake::Mesh>& m, baked_data_mesh_set& dst, const baked_data_mesh_set& src)
 	{
-		const auto use_min = std::find(inverse.begin(), inverse.end(), p.first) != inverse.end();
-		auto f = entries.find(p.first);
-		entries[p.first].main_set = f == entries.end()
-			? p.second.main_set
-			: merge_mesh_data(p.second.main_set, f->second.main_set, use_min ? 1.f : mult_b, use_min, true, apply_to_both_sets);
-	}
+		if (std::find(inverse.begin(), inverse.end(), m) != inverse.end())
+		{
+			combine_sets(dst, src, [=](float d, float s) { return std::min(s * mult_b, d); }, apply_to_both_sets);
+		}
+		else
+		{
+			combine_sets(dst, src, [=](float d, float s) { return std::max(s * mult_b, d); }, apply_to_both_sets);
+		}		
+	});
+}
+
+void baked_data::average(const baked_data& b, float mult_b, float mult_base, const std::vector<std::shared_ptr<bake::Mesh>>& inverse, bool apply_to_both_sets)
+{
+	combine_sets_entries(entries, b, [=](const std::shared_ptr<bake::Mesh>& m, baked_data_mesh_set& dst, const baked_data_mesh_set& src)
+	{
+		if (std::find(inverse.begin(), inverse.end(), m) != inverse.end())
+		{
+			combine_sets(dst, src, [=](float d, float s) { return std::min(s, d); }, apply_to_both_sets);
+		}
+		else
+		{
+			combine_sets(dst, src, [=](float d, float s) { return s * mult_b + d * mult_base; }, apply_to_both_sets);
+		}
+	});
 }
 
 void baked_data::replace(const baked_data& b)
@@ -332,20 +347,6 @@ void baked_data::replace(const baked_data& b)
 	for (const auto& p : b.entries)
 	{
 		entries[p.first] = p.second;
-	}
-}
-
-void baked_data::average(const baked_data& b, float mult_b, float mult_base, const std::vector<std::shared_ptr<bake::Mesh>>& inverse, bool apply_to_both_sets)
-{
-	for (const auto& p : b.entries)
-	{
-		const auto use_min = std::find(inverse.begin(), inverse.end(), p.first) != inverse.end();
-		auto f = entries.find(p.first);
-		entries[p.first].main_set = f == entries.end()
-			? p.second.main_set
-			: use_min
-			? merge_mesh_data(p.second.main_set, f->second.main_set, 1.f, true, true, apply_to_both_sets)
-			: average_mesh_data(p.second.main_set, f->second.main_set, mult_b, mult_base, true, apply_to_both_sets);
 	}
 }
 
