@@ -1327,6 +1327,17 @@ struct file_processor
 						}
 					}
 				}
+				
+				{
+					dimmed_meshes += driver_root->find_meshes(resolve_filter(names));
+					if (car_mode)
+					{
+						for (const auto& node : driver_root->find_nodes(resolve_filter(names)))
+						{
+							dimmed_meshes += node->get_meshes();
+						}
+					}
+				}
 
 				for (const auto& mesh : dimmed_meshes)
 				{
