@@ -25,7 +25,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-// #define USE_TRYCATCH
+#define USE_TRYCATCH
 
 #include <cassert>
 #include <cstdio>
@@ -51,7 +51,8 @@
 #pragma comment(lib, "Shlwapi.lib")
 #pragma comment(lib, "WinMM.lib")
 #pragma comment(lib, "cudart_static.lib")
-#pragma comment(lib, "optix_prime.6.0.0.lib")
+// #pragma comment(lib, "optix_prime.6.0.0.lib")
+#pragma comment(lib, "optix.6.0.0.lib")
 
 struct mixing_params
 {

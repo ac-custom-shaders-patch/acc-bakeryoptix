@@ -926,8 +926,17 @@
     <ClInclude Include="utils\custom_crash_handler.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="ray.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="bake_kernels.cu" />
+    <CudaCompile Include="raygeneration.cu" />
+    <CudaCompile Include="raymiss.cu" />
+    <CudaCompile Include="rayexception.cu" />
+    <CudaCompile Include="raybb.cu" />
+    <CudaCompile Include="rayintersection.cu" />
+    <CudaCompile Include="rayhit.cu" />
   </ItemGroup>
 </Project>
