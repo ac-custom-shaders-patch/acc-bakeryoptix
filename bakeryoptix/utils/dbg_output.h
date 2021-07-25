@@ -17,3 +17,10 @@
 #define OUTPUT(...) __VA_ARGS__
 #define DBG(...) std::cout << "[" << __func__ << ":" << __LINE__ << "] " << OUTPUT(BOOST_PP_OVERLOAD(DBG_, __VA_ARGS__)(__VA_ARGS__)) << "\n";
 #define DBG_FN(...) std::cout << "[" << __func__ << ":" << __LINE__ << "] " << OUTPUT(BOOST_PP_OVERLOAD(DBG_, __VA_ARGS__)(__VA_ARGS__)) << "\n";
+
+// #define DEVELOPMENT_CFG
+#ifdef DEVELOPMENT_CFG
+#define DEBUGTIME __pragma(optimize("", off))
+#else
+#define DEBUGTIME 
+#endif

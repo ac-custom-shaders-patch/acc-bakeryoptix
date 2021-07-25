@@ -13,6 +13,8 @@
 #include <utils/dbg_output.h>
 #include <utils/cout_progress.h>
 
+DEBUGTIME
+
 template <typename T>
 void add_bytes(std::basic_string<uint8_t>& d, const T& value)
 {
@@ -45,31 +47,21 @@ struct values_recorder
 
 	byte adjust(float value) const
 	{
-		return byte(255.f * powf(optix::clamp((1.f - params.opacity + value * params.opacity) * params.brightness, 0.f, 1.f), params.gamma));
+		return byte(255.f * powf(powf(optix::clamp((1.f - params.opacity + value * params.opacity) * params.brightness, 0.f, 1.f), params.gamma), VAO_ENCODE_POW));
 	}
 
 	template <typename T>
 	void add_values(const std::shared_ptr<bake::Mesh>& m, int state, T fn)
 	{
 		const auto name = (state & ALTERNATIVE) ? "@@__ALT@:" + m->name : m->name;
-		data.reserve(data.size() + name.size() + m->vertices.size() * (params.use_v4 ? 1 : 2) + 24);
+		data.reserve(data.size() + name.size() + m->vertices.size() + 24);
 		add_string(data, name);
 		add_bytes(data, int((state & SECONDARY) ? 3 : 1));
 		add_bytes(data, m->signature_point);
 		add_bytes(data, int(m->vertices.size()));
-		if (params.use_v4)
+		for (size_t j = 0U; j < m->vertices.size(); j++)
 		{
-			for (size_t j = 0U; j < m->vertices.size(); j++)
-			{
-				add_bytes(data, adjust(fn(j)));
-			}
-		}
-		else
-		{
-			for (size_t j = 0U; j < m->vertices.size(); j++)
-			{
-				add_bytes(data, half_float::half(fn(j)));
-			}
+			add_bytes(data, adjust(fn(j)));
 		}
 	}
 
@@ -97,20 +89,113 @@ struct values_recorder
 	}
 };
 
-void baked_data::save(const utils::path& destination, const save_params& params, bool store_secondary_set) const
+inline size_t vertex_key(const bake::MeshVertex& t, const bake::Vec3& n, float mult, float normal_contribution)
+{
+	auto v = bake::Vec3{
+		roundf((t.pos.x + n.x * normal_contribution) * mult),
+		roundf((t.pos.y + n.y * normal_contribution) * mult),
+		roundf((t.pos.z + n.z * normal_contribution) * mult)};
+	return *(size_t*)&v.x * 397 ^ size_t(*(uint32_t*)&v.z);
+}
+
+void baked_data::smooth_ao()
+{
+	struct data
+	{
+		float2 main, alternative;
+
+		void add(const baked_data_mesh& m, uint32_t i)
+		{
+			main.x = std::max(main.x, m.main_set[i].x);
+			main.y = std::max(main.y, m.main_set[i].y);
+			if (!m.alternative_set.empty())
+			{
+				alternative.x = std::max(alternative.x, m.alternative_set[i].x);
+				alternative.y = std::max(alternative.y, m.alternative_set[i].y);
+			}
+		}
+
+		void fill(baked_data_mesh& m, uint32_t i) const
+		{
+			m.main_set[i] = main;
+			if (!m.alternative_set.empty())
+			{
+				m.alternative_set[i] = alternative;
+			}
+		}
+	};
+
+	std::unordered_map<size_t, data> v;
+
+	const auto mult = 1.f / 0.005f;
+	const auto normal_contribution = 0.003f;
+	
+	cout_progress progress_smooth{entries.size() * 2};
+	for (const auto& m : entries)
+	{
+		progress_smooth.report();
+		if (m.first->normals.empty()) continue;
+		
+		auto i = 0U;
+		for (auto& t : m.first->vertices)
+		{
+			const auto k = vertex_key(t, m.first->normals[i], mult, normal_contribution);
+			const auto f = v.find(k);
+			if (f != v.end())
+			{
+				f->second.add(m.second, i);
+			}
+			else
+			{
+				(v[k] = data()).add(m.second, i);
+			}
+			++i;
+		}
+	}
+	for (auto& m : entries)
+	{
+		progress_smooth.report();
+		if (m.first->normals.empty()) continue;
+		
+		auto i = 0U;
+		for (auto& t : m.first->vertices)
+		{
+			v[vertex_key(t, m.first->normals[i], mult, normal_contribution)].fill(m.second, i);
+			++i;
+		}
+	}
+}
+
+void baked_data::save(const utils::path& destination, const save_params& params, bool store_secondary_set)
 {
 	using namespace optix;
 	std::basic_string<uint8_t> data;
 
 	std::vector<unsigned> nearbyes;
 	std::vector<bool> averaged;
+	
+	remove(destination.string().c_str());
+	mz_zip_archive zip_archive;
+	mz_zip_zero_struct(&zip_archive);
+	if (!mz_zip_writer_init_file_v2(&zip_archive, destination.string().c_str(), 0, MZ_BEST_COMPRESSION))
+	{
+		throw std::runtime_error("Failed to initialize new archive");
+	}
+	
+	auto config = params.extra_config;
+	const auto config_data = config.to_string();
+	mz_zip_writer_add_mem(&zip_archive, "Config.ini", config_data.c_str(), config_data.size(), MZ_BEST_COMPRESSION);
 
-	values_recorder rec{data, params};
+	for (auto& e : extra_entries)
+	{
+		mz_zip_writer_add_mem(&zip_archive, e.first.c_str(), e.second.data(), e.second.size(), MZ_BEST_COMPRESSION);
+	}
 
-	cout_progress progress{entries.size()};
+	values_recorder rec{data, params};	
+	cout_progress progress_main{entries.size()};
 	for (const auto& entry : entries)
 	{
-		progress.report();
+		progress_main.report();
 
 		const auto m = entry.first;
 		auto ao = entry.second;
@@ -126,7 +211,8 @@ void baked_data::save(const utils::path& destination, const save_params& params,
 			cleaned_up.reserve(m->vertices.size());
 			for (auto j = 0U; j < m->vertices.size(); j++)
 			{
-				cleaned_up.push_back(make_float4(m->vertices[j].x, m->vertices[j].y, m->vertices[j].z, ao.main_set[j].x));
+				const auto& v = m->vertices[j].pos;
+				cleaned_up.push_back(make_float4(v.x, v.y, v.z, ao.main_set[j].x));
 			}
 
 			/*add_bytes(data, int(m->vertices.size()));
@@ -139,7 +225,7 @@ void baked_data::save(const utils::path& destination, const save_params& params,
 			add_bytes(data, int(cleaned_up.size()));
 			for (const auto& j : cleaned_up)
 			{
-				add_bytes(data, *(bake::Vec3*)&j);
+				add_bytes(data, *(const bake::Vec3*)&j);
 				add_bytes(data, byte(clamp(powf(j.w * 1.1f, 1.1f) * 255, 0.f, 255.f)));
 			}
 
@@ -165,7 +251,7 @@ void baked_data::save(const utils::path& destination, const save_params& params,
 			vertices_conv.reserve(m->vertices.size());
 			for (auto j = 0U; j < m->vertices.size(); j++)
 			{
-				vertices_conv.push_back({m->vertices[j].x, j});
+				vertices_conv.push_back({m->vertices[j].pos.x, j});
 			}
 			std::sort(vertices_conv.begin(), vertices_conv.end(), [](const vertex& a, const vertex& b) { return a.pos > b.pos; });
 
@@ -237,20 +323,9 @@ void baked_data::save(const utils::path& destination, const save_params& params,
 		}
 	}
 
-	remove(destination.string().c_str());
-	mz_zip_add_mem_to_archive_file_in_place(destination.string().c_str(), params.use_v4 ? "Patch_v4.data" : "Patch_v3.data",
-		data.c_str(), data.size(), nullptr, 0, MZ_BEST_COMPRESSION);
-
-	auto config = params.extra_config;
-	if (!params.use_v4)
-	{
-		config.set("LIGHTING", "BRIGHTNESS", params.brightness);
-		config.set("LIGHTING", "GAMMA", params.gamma);
-		config.set("LIGHTING", "OPACITY", params.opacity);
-	}
-	const auto config_data = config.to_string();
-	mz_zip_add_mem_to_archive_file_in_place(destination.string().c_str(), "Config.ini",
-		config_data.c_str(), config_data.size(), nullptr, 0, MZ_BEST_COMPRESSION);
+	mz_zip_writer_add_mem(&zip_archive, "Patch_v5.data", data.c_str(), data.size(), MZ_BEST_COMPRESSION);
+	mz_zip_writer_finalize_archive(&zip_archive);
+	mz_zip_writer_end(&zip_archive);
 }
 
 template <typename TPrim>
@@ -323,7 +398,7 @@ void baked_data::max(const baked_data& b, float mult_b, const std::vector<std::s
 		else
 		{
 			combine_sets(dst, src, [=](float d, float s) { return std::max(s * mult_b, d); }, apply_to_both_sets);
-		}		
+		}
 	});
 }
 

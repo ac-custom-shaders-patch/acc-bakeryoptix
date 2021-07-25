@@ -2,13 +2,19 @@
 #include <map>
 #include <vector>
 #include <memory>
+#include <utils/blob.h>
 #include <utils/ini_file.h>
 
-namespace utils {
+#define VAO_DECODE_POW 2.f
+#define VAO_ENCODE_POW (1.f / VAO_DECODE_POW)
+
+namespace utils
+{
 	class path;
 }
 
-namespace bake {
+namespace bake
+{
 	struct Mesh;
 }
 
@@ -29,13 +35,17 @@ struct save_params
 	float gamma;
 	float opacity;
 	utils::ini_file extra_config;
-	bool use_v4;
+	bool average_ao_in_same_pos;
 };
 
 struct baked_data
 {
 	std::map<std::shared_ptr<bake::Mesh>, baked_data_mesh> entries;
-	void save(const utils::path& destination, const save_params& params, bool store_secondary_set) const;
+	std::vector<float> extra_points_ao;
+	std::map<std::string, utils::blob> extra_entries;
+
+	void smooth_ao();
+	void save(const utils::path& destination, const save_params& params, bool store_secondary_set);
 	void replace(const baked_data& b);
 	void replace_primary(const baked_data& b);
 	void brighten(const baked_data& b, float brighten_k);
@@ -45,4 +55,3 @@ struct baked_data
 	void set_alternative_set(const baked_data& b);
 	void fill(const std::shared_ptr<bake::Mesh>& mesh, float x);
 };
-

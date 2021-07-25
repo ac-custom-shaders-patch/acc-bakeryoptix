@@ -75,6 +75,21 @@
     <ClCompile Include="utils\custom_crash_handler.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="dds\dds_loader.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\base64.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\string_operations.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\blob.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\xxhash\xxhash.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="bake_ao_optix_prime.h">
@@ -929,6 +944,33 @@
     <ClInclude Include="ray.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="ptx_programs.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="dds\dds_loader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="dx_shaders.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\base64.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\nanort.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\string_operations.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\blob.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\xxhash\xxh3.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\xxhash\xxhash.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="bake_kernels.cu" />
@@ -938,5 +980,7 @@
     <CudaCompile Include="raybb.cu" />
     <CudaCompile Include="rayintersection.cu" />
     <CudaCompile Include="rayhit.cu" />
+    <CudaCompile Include="rayanyhit.cu" />
+    <CudaCompile Include="rayanyhit_tree.cu" />
   </ItemGroup>
 </Project>

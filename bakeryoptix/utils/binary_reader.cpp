@@ -43,6 +43,21 @@ namespace utils
 		return std::string(&buffer_[get_pos_and_move(length)], length);
 	}
 
+	std::string binary_reader::read_data(uint size)
+	{
+		if (left_ >= size)
+		{
+			return std::string(&buffer_[get_pos_and_move(size)], size);
+		}
+		
+		auto r = std::string();
+		r.resize(size);
+		memcpy(&r[0], &buffer_[total_ - left_], left_);
+		stream_->read(&r[left_], size - left_);
+		left_ = 0;
+		return r;
+	}
+
 	bool binary_reader::match(const char* str)
 	{
 		while (*str)

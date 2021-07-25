@@ -30,28 +30,59 @@
 
 rtDeclareVariable(rtObject, sysTopObject, , );
 
-rtBuffer<float3, 1> inNormalsBuffer;    
+rtBuffer<float3, 1> inNormalsBuffer;
 rtBuffer<float3, 1> inFaceNormalsBuffer;
-rtBuffer<float3, 1> inPositionsBuffer;  
-rtBuffer<float, 2> sysOutputBuffer;     // RGBA32F
+rtBuffer<float3, 1> inPositionsBuffer;
+rtBuffer<float, 2> sysOutputBuffer; // RGBA32F
 
 rtDeclareVariable(int, px, , );
 rtDeclareVariable(int, py, , );
 rtDeclareVariable(int, sqrtPasses, , );
+rtDeclareVariable(uint, bounceCounts, , );
 rtDeclareVariable(uint, numSamples, , );
 rtDeclareVariable(uint, baseSeed, , );
-rtDeclareVariable(float, sceneOffset, , );
+rtDeclareVariable(float, sceneOffsetHorizontal, , );
+rtDeclareVariable(float, sceneOffsetVertical, , );
 
 rtDeclareVariable(uint2, theLaunchDim, rtLaunchDim, );
 rtDeclareVariable(uint2, theLaunchIndex, rtLaunchIndex, );
 
+RT_FUNCTION void integrator(PerRayData& prd, float3& radiance)
+{
+	radiance = make_float3(0.0f); // Start with black.
+
+	float3 throughput = make_float3(1.0f); // The throughput for the next radiance, starts with 1.0f.
+	uint depth = 0U;                       // Path segment index. Primary ray is 0.
+	while (depth < bounceCounts)
+	{
+		prd.wo = -prd.wi; // wi is the next path segment ray.direction. wo is the direction to the observer.
+		prd.flags = 0;    // Clear all non-persistent flags. None in this version.
+
+		// Note that the primary rays wouldn't need to offset the ray t_min by sysSceneEpsilon.
+		optix::Ray ray = optix::make_Ray(prd.pos, prd.wi, 0, 0.001f, RT_DEFAULT_MAX);
+		rtTrace(sysTopObject, ray, prd);
+
+		radiance += throughput * prd.radiance;
+
+		// Path termination by miss shader or sample() routines.
+		// If terminate is true, f_over_pdf and pdf might be undefined.
+		if ((prd.flags & FLAG_TERMINATE) || prd.pdf <= 0.0f || isNull(prd.f_over_pdf))
+		{
+			break;
+		}
+
+		// PERF f_over_pdf already contains the proper throughput adjustment for diffuse materials: f * (fabsf(optix::dot(prd.wi, state.normal)) / prd.pdf);
+		throughput *= prd.f_over_pdf;
+
+		// Russian Roulette path termination after a specified number of bounces in sysPathLengths.x would go here. See next examples.
+
+		++depth; // Next path segment.
+	}
+}
+
 // Entry point
 RT_PROGRAM void raygeneration()
 {
-	PerRayData prd;
-
-	prd.radiance = make_float3(0.0f);
-
 	// The launch index is the pixel coordinate.
 	// Note that launchIndex = (0, 0) is the bottom left corner of the image,
 	// which matches the origin in the OpenGL texture used to display the result.
@@ -72,16 +103,20 @@ RT_PROGRAM void raygeneration()
 	const unsigned int tea_seed = (baseSeed << 16) | (px * sqrtPasses + py);
 	unsigned seed = tea<2>(tea_seed, idx);
 
-	const float3 sample_norm = inNormalsBuffer[idx];
-	const float3 sample_face_norm = inFaceNormalsBuffer[idx];
+	float3 sample_norm = inNormalsBuffer[idx];
+	float3 sample_face_norm = inFaceNormalsBuffer[idx];
+	if (optix::dot(sample_norm, sample_face_norm) < 0)
+	{
+		sample_norm = sample_face_norm;
+	}
+	
 	const float3 sample_pos = inPositionsBuffer[idx];
-	const float3 ray_origin = sample_pos + sceneOffset * sample_norm;
 	optix::Onb onb(sample_norm);
 
 	float3 ray_dir;
 	float u0 = (static_cast<float>(px) + rnd(seed)) / static_cast<float>(sqrtPasses);
 	float u1 = (static_cast<float>(py) + rnd(seed)) / static_cast<float>(sqrtPasses);
-	int j = 0;
+	uint j = 0U;
 	do
 	{
 		optix::cosine_sample_hemisphere(u0, u1, ray_dir);
@@ -93,14 +128,17 @@ RT_PROGRAM void raygeneration()
 	}
 	while (j < 5 && optix::dot(ray_dir, sample_face_norm) <= 0.0f);
 
+	if (optix::dot(ray_dir, sample_face_norm) <= 0.0f)
+	{
+		ray_dir = -ray_dir;
+	}
 
-	// Shoot a ray from origin into direction (must always be normalized!) for ray type 0 and test the interval between 0.0f and RT_DEFAULT_MAX for intersections.
-	optix::Ray ray = optix::make_Ray(ray_origin, ray_dir, 0, 0.0f, RT_DEFAULT_MAX);
+	PerRayData prd;
+	prd.seed = tea_custom<8>(tea_seed, idx);
+	prd.pos = sample_pos + float3{sceneOffsetHorizontal, sceneOffsetVertical, sceneOffsetHorizontal} * (sample_norm + ray_dir) / 2.f;
+	prd.wi = ray_dir;
 
-	// Start the ray traversal at the scene's root node.
-	// The ray becomes the variable with rtCurrentRay semantic in the other program domains.
-	// The PerRayData becomes the variable with the semantic rtPayload in the other program domains,
-	// which allows to exchange arbitrary data between the program domains.
-	rtTrace(sysTopObject, ray, prd);
-	sysOutputBuffer[make_uint2(idx, 0)] += prd.radiance.y;
+	float3 radiance;
+	integrator(prd, radiance); // In this case a unidirectional path tracer.
+	sysOutputBuffer[make_uint2(idx, 0)] += radiance.y;
 }

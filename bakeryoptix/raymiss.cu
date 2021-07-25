@@ -32,5 +32,7 @@ rtDeclareVariable(PerRayData, thePrd, rtPayload, );
 
 RT_PROGRAM void raymiss()
 {
-  thePrd.radiance = make_float3(1.0f); // Constant white emission.
+  // thePrd.radiance = make_float3(1.0f); // Constant white emission.
+  thePrd.radiance = make_float3(1.0f); // Constant white emission. No next event estimation (direct lighting).
+  thePrd.flags   |= FLAG_TERMINATE;    // End of path.
 }

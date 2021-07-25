@@ -27,32 +27,35 @@
 
 #define USE_TRYCATCH
 
+#include <bake_api.h>
+#include <bake_wrap.h>
 #include <cassert>
 #include <cstdio>
+#include <cuda_runtime_api.h>
+#include <fstream>
 #include <iostream>
+#include <set>
 #include <utility>
+#include <utils/cout_progress.h>
+#include <utils/custom_crash_handler.h>
+#include <utils/filesystem.h>
+#include <utils/ini_file.h>
+#include <utils/load_util.h>
+#include <utils/nanort.h>
+#include <utils/perf_moment.h>
+#include <utils/std_ext.h>
+#include <utils/vector_operations.h>
 #include <vector>
 #include <Windows.h>
-
-#include <utils/std_ext.h>
-#include <utils/filesystem.h>
-#include <utils/perf_moment.h>
-#include <utils/load_util.h>
-#include <utils/vector_operations.h>
-
-#include <bake_api.h>
-#include <utils/ini_file.h>
-#include <cuda_runtime_api.h>
-#include <set>
-#include <bake_wrap.h>
-#include <fstream>
-#include <utils/custom_crash_handler.h>
+#include <utils/blob.h>
 
 #pragma comment(lib, "Shlwapi.lib")
 #pragma comment(lib, "WinMM.lib")
 #pragma comment(lib, "cudart_static.lib")
 // #pragma comment(lib, "optix_prime.6.0.0.lib")
 #pragma comment(lib, "optix.6.0.0.lib")
+
+DEBUGTIME
 
 struct mixing_params
 {
@@ -133,9 +136,9 @@ void dump_obj(const utils::path& filename, const std::vector<std::shared_ptr<bak
 		const auto& x = (*(const optix::Matrix4x4*)&m->matrix).transpose();
 		float4 f4;
 		f4.w = 1.f;
-		for (const auto& vertice : m->vertices)
+		for (const auto& vertex : m->vertices)
 		{
-			*(bake::Vec3*)&f4 = vertice;
+			*(bake::Vec3*)&f4 = vertex.pos;
 			const auto w = f4 * x;
 			o << "v " << w.x << " " << w.y << " " << w.z << std::endl;
 		}
@@ -363,7 +366,6 @@ struct file_processor
 		}
 
 		// General options
-		cfg_bake.use_cuda = config.get("GENERAL", "CPU_ONLY", std::string("AUTO")) == "AUTO" ? is_cuda_available : config.get("GENERAL", "CPU_ONLY", false);
 		cfg_load.exclude_patch = config.get(section, "EXCLUDE_FROM_BAKING", std::vector<std::string>());
 		cfg_load.exclude_blockers = config.get(section, "FORCE_PASSING_LIGHT", std::vector<std::string>());
 		cfg_load.exclude_blockers_alpha_test = config.get(section, "FORCE_ALPHA_TEST_PASSING_LIGHT", false);
@@ -377,10 +379,14 @@ struct file_processor
 		cfg_bake.num_samples = config.get(section, "SAMPLES", std::string("AUTO")) == "AUTO" ? 0 : config.get(section, "SAMPLES", 0);
 		cfg_bake.min_samples_per_face = config.get(section, "MIN_SAMPLES_PER_FACE", 4);
 		cfg_bake.num_rays = config.get(section, "RAYS_PER_SAMPLE", 64);
-		cfg_bake.scene_offset_scale = config.get(section, "RAYS_OFFSET", 0.1f);
+		cfg_bake.fix_incorrect_normals = config.get(section, "FIX_INCORRECT_NORMALS", true);
+		cfg_bake.scene_offset_scale_horizontal = config.get(section, "RAYS_OFFSET", 0.1f);
+		cfg_bake.scene_offset_scale_vertical = cfg_bake.scene_offset_scale_horizontal;
+		cfg_bake.trees_light_pass_chance = config.get(section, "TREES_LIGHT_PASS_CHANCE", 0.9f);
 		cfg_bake.use_ground_plane_blocker = config.get(section, "USE_GROUND", false);
 		cfg_bake.ground_scale_factor = config.get(section, "GROUND_SCALE", 10.f);
-		cfg_bake.scene_maxdistance_scale = config.get(section, "SCENE_MAX_DISTANCE_SCALE", 10.f);
+		cfg_bake.scene_albedo = config.get(section, "BASE_ALBEDO", 0.9f);
+		cfg_bake.bounce_counts = config.get(section, "BOUNCES", 5);
 		cfg_bake.ground_upaxis = config.get(section, "GROUND_UP_AXIS", 1);
 		cfg_bake.ground_offset_factor = config.get(section, "GROUND_OFFSET", 0.f);
 		cfg_bake.filter_mode = config.get(section, "FILTER_MODE", std::string("LEAST_SQUARES")) == "LEAST_SQUARES"
@@ -388,9 +394,9 @@ struct file_processor
 			: VERTEX_FILTER_AREA_BASED;
 		cfg_bake.regularization_weight = config.get(section, "FILTER_REGULARIZATION_WEIGHT", 0.1f);
 
-		cfg_save.use_v4 = config.get("GENERAL", "USE_V4", std::string("AUTO")) == "AUTO" ? cfg_bake.use_cuda : config.get("GENERAL", "USE_V4", true);
 		cfg_save.averaging_threshold = config.get(section, "AVERAGING_THRESHOLD", 0.f);
 		cfg_save.averaging_cos_threshold = config.get(section, "AVERAGING_COS_THRESHOLD", 0.95f);
+		cfg_save.average_ao_in_same_pos = config.get(section, "AVERAGING_OVERALL", true);
 		cfg_save.brightness = config.get(section, "BRIGHTNESS", 1.02f);
 		cfg_save.gamma = config.get(section, "GAMMA", 0.92f);
 		cfg_save.opacity = config.get(section, "OPACITY", 0.97f);
@@ -633,7 +639,7 @@ struct file_processor
 		{
 			return bake_wrap::bake_scene(scene, blockers.full, config, verbose);
 		}
-		
+
 		auto scene_adj = std::make_shared<Scene>(*scene);
 		for (const auto& r : reduced_ground_params)
 		{
@@ -685,6 +691,12 @@ struct file_processor
 		}
 
 		auto ao = bake_stuff(root);
+
+		if (cfg_save.average_ao_in_same_pos)
+		{
+			PERF("Overall averaging");
+			ao.smooth_ao();
+		}
 
 		// Saving result
 		{
@@ -867,6 +879,486 @@ struct file_processor
 			: input_file.parent_path()) / "ai" / name;
 	}
 
+	void bake_extra_samples_old(baked_data& ao, const std::shared_ptr<Node>& root, bool ao_samples_pits, bool ao_samples_ai_lanes)
+	{
+		if (!ao_samples_pits && !ao_samples_ai_lanes) return;
+		const auto ai_lanes_y_offset = config.get(section, "AO_SAMPLES_AI_LANES_Y_OFFSET", std::vector<float>{0.5f});
+		const auto ai_lanes_sides = config.get(section, "AO_SAMPLES_AI_LANES_SIDES", 0.67f) / 2.f;
+		const auto ai_lanes_pitlane = config.get(section, "AO_SAMPLES_AI_LANES_PITLINE_WIDTH", 4.f) / 2.f;
+		const auto ai_lanes_min_distance = config.get(section, "AO_SAMPLES_AI_LANES_MIN_DISTANCE", 4.f);
+
+		PERF("Special: baking extra AO samples")
+
+		auto mesh = std::make_shared<Mesh>();
+		mesh->name = "@@__EXTRA_AO@";
+		mesh->cast_shadows = false;
+		mesh->receive_shadows = true;
+		mesh->is_visible = true;
+		mesh->material = std::make_shared<Material>();
+		mesh->signature_point = Vec3{};
+
+		static const float2 poisson_disk[10] = {
+			optix::make_float2(-0.2027472f, -0.7174203f),
+			optix::make_float2(-0.4839617f, -0.1232477f),
+			optix::make_float2(0.4924171f, -0.06338801f),
+			optix::make_float2(-0.6403998f, 0.6834511f),
+			optix::make_float2(-0.8817205f, -0.4650014f),
+			optix::make_float2(0.04554421f, 0.1661989f),
+			optix::make_float2(0.1042245f, 0.9336259f),
+			optix::make_float2(0.6152743f, 0.6344957f),
+			optix::make_float2(0.5085323f, -0.7106467f),
+			optix::make_float2(-0.9731231f, 0.1328296f),
+		};
+
+		if (ao_samples_pits)
+		{
+			for (const auto& n : root->find_nodes(resolve_filter({"AC_PIT_?"})))
+			{
+				mesh->vertices.push_back({{n->matrix[3], n->matrix[7], n->matrix[11]}, {}});
+				for (auto p : poisson_disk)
+				{
+					mesh->vertices.push_back({{n->matrix[3] + p.x * 4.f, n->matrix[7], n->matrix[11] + p.y * 4.f}, {}});
+				}
+			}
+		}
+
+		if (ao_samples_ai_lanes)
+		{
+			const auto ai_fast = load_ailane(get_ai_lane_filename("fast_lane.ai"));
+			const auto ai_pits = load_ailane(get_ai_lane_filename("pit_lane.ai"));
+
+			for (const auto& ai : {ai_fast, ai_pits})
+			{
+				auto last_length = -ai_lanes_min_distance;
+				for (const auto& v : ai)
+				{
+					if (v.length - last_length >= ai_lanes_min_distance)
+					{
+						mesh->vertices.push_back({v.point, {}});
+						last_length = v.length;
+					}
+				}
+			}
+
+			if (ai_lanes_sides > 0.f)
+			{
+				for (const auto& ai : {ai_fast, ai_pits})
+				{
+					auto last_length = -ai_lanes_min_distance;
+					for (auto i = 1U; i < ai.size(); i++)
+					{
+						if (ai[i - 1].length - last_length >= ai_lanes_min_distance)
+						{
+							const auto& v0 = *(float3*)&ai[i - 1].point;
+							const auto& v1 = *(float3*)&ai[i].point;
+							auto side = optix::normalize(optix::cross(v1 - v0, float3{0.f, 1.f, 0.f}));
+							auto s0 = (ai[i - 1].side_left + ai[i - 1].side_left) * ai_lanes_sides;
+							auto s1 = (ai[i - 1].side_right + ai[i - 1].side_right) * ai_lanes_sides;
+							if (s0 == 0) s0 = ai_lanes_pitlane;
+							if (s1 == 0) s1 = ai_lanes_pitlane;
+							if (s0 > 0.f)
+							{
+								const auto p0 = (v0 + v1) / 2.f - side * s0;
+								mesh->vertices.push_back({*(Vec3*)&p0, {}});
+							}
+							if (s1 > 0.f)
+							{
+								const auto p1 = (v0 + v1) / 2.f + side * s1;
+								mesh->vertices.push_back({*(Vec3*)&p1, {}});
+							}
+							last_length = ai[i - 1].length;
+						}
+					}
+				}
+			}
+		}
+
+		auto cfg_extra_ao = cfg_bake;
+		cfg_extra_ao.ground_offset_factor = 2.f;
+		cfg_extra_ao.disable_normals = true;
+		cfg_extra_ao.sample_on_points = true;
+		cfg_extra_ao.use_ground_plane_blocker = false;
+		cfg_extra_ao.filter_mode = VERTEX_FILTER_AREA_BASED;
+
+		const auto extra_scene = std::make_shared<Scene>(root);
+		extra_scene->receivers = {mesh};
+
+		baked_data extra_ao;
+		for (auto offset : ai_lanes_y_offset)
+		{
+			cfg_extra_ao.sample_offset = {0.f, offset, 0.f};
+			if (extra_ao.entries.empty())
+			{
+				extra_ao = bake_scene(extra_scene, cfg_extra_ao);
+			}
+			else
+			{
+				extra_ao.max(bake_scene(extra_scene, cfg_extra_ao));
+			}
+		}
+		ao.extend(extra_ao);
+	}
+
+	uint64_t vec3_key(const Vec3& p)
+	{
+		const auto c = [](float v) -> uint64_t
+		{
+			auto i = int64_t(v);
+			return *(uint64_t*)&i & 0xffffffff;
+		};
+		uint64_t r = c(p.x);
+		r |= c(p.z) << 32;
+		r ^= c(p.y) << 16;
+		return r;
+	}
+
+	bool is_physics_surface(const std::string& name)
+	{
+		auto any = false;
+		for (const auto& c : name)
+		{
+			if (c == ' ' || c == '-' || isdigit(c))
+			{
+				any = any || isdigit(c);
+			}
+			else
+			{
+				return any && isalpha(c) && (memcmp(&c, "WALL", 4) != 0 || isalpha((&c)[4]));
+			}
+		}
+		return false;
+	}
+
+	void write_file(const std::wstring& filename, const std::string& data)
+	{
+		auto s = std::ofstream(filename, std::ios::binary);
+		std::copy(data.begin(), data.end(), std::ostream_iterator<char>(s));
+	}
+
+	void bake_extra_samples_new(baked_data& ao, const std::shared_ptr<Node>& root)
+	{
+		std::cout << "Extra AO samples:" << std::endl;
+
+		static float large_grid_size = 40.f;
+		static float large_grid_height = 20.f;
+		static uint32_t small_grid_size = 10U;
+		static uint32_t small_grid_height = 3U;
+		static float base_vertical_offset = 0.1f;
+
+		struct mesh_info
+		{
+			std::shared_ptr<Mesh> mesh;
+			std::vector<Vec3> vertices;
+			nanort::BVHAccel<float> accel;
+			Vec2 bb_min;
+			Vec2 bb_max;
+
+			static float distance_sqr(const Vec3& v0, const Vec3& v1)
+			{
+				const auto dx = v0.x - v1.x;
+				const auto dy = v0.z - v1.z;
+				return dx * dx + dy * dy;
+			}
+
+			void get_y(Vec3 v, float& y, float& y_fault)
+			{
+				if (v.x > bb_min.x && v.z > bb_min.y
+					&& v.x < bb_max.x && v.z < bb_max.y)
+				{
+					/*auto id = std::numeric_limits<uint32_t>::max();
+					v.y += 100.f;
+					auto length = 1000.f;
+					DBG(v.x, v.y, v.z, length)
+					accel.TraverseDownSimple(&vertices[0].x, &mesh->triangles[0].a, &v.x, length, id);
+					DBG(length)
+					if (id != std::numeric_limits<uint32_t>::max())
+					{
+						DBG(length);
+						const auto new_y = v.y - length;
+						if (new_y > y || y_fault >= 0.f)
+						{
+							y = new_y;
+							y_fault = -1.f;
+						}
+					}*/
+
+					nanort::Ray<float> r{};
+					r.dir[0] = 0.f;
+					r.dir[1] = -1.f;
+					r.dir[2] = 0.f;
+					r.org[0] = v.x;
+					r.org[1] = v.y + 10.f;
+					r.org[2] = v.z;
+					r.max_t = 20.f;
+					r.min_t = 0.f;
+
+					nanort::TriangleIntersector<> triangle_intersecter(&vertices[0].x, &mesh->triangles[0].a);
+					nanort::TriangleIntersection<> isect{};
+					if (accel.Traverse<true>(r, triangle_intersecter, &isect))
+					{
+						const auto new_y = r.org[1] - isect.t;
+						if (new_y < y || y_fault >= 0.f)
+						{
+							y = new_y;
+							y_fault = -1.f;
+						}
+					}
+				}
+			}
+
+			void get_y_fallback(Vec3 v, float& y, float& y_fault)
+			{
+				if (y_fault > 0.f
+					&& v.x > bb_min.x - 60.f && v.z > bb_min.y - 60.f
+					&& v.x < bb_max.x + 60.f && v.z < bb_max.y + 60.f)
+				{
+					for (const auto& p : vertices)
+					{
+						const auto d = distance_sqr(p, v);
+						if (d < y_fault)
+						{
+							y_fault = d;
+							y = p.y;
+						}
+					}
+				}
+			}
+
+			void finalize(std::shared_ptr<Mesh>&& mesh_ptr)
+			{
+				bb_min = {FLT_MAX, FLT_MAX};
+				bb_max = {-FLT_MAX, -FLT_MAX};
+				for (auto p : vertices)
+				{
+					bb_min.x = std::min(bb_min.x, p.x);
+					bb_min.y = std::min(bb_min.y, p.z);
+					bb_max.x = std::max(bb_max.x, p.x);
+					bb_max.y = std::max(bb_max.y, p.z);
+				}
+
+				nanort::BVHBuildOptions<float> build_options;
+				build_options.cache_bbox = true;
+				const nanort::TriangleMesh<float> rt_mesh(&vertices[0].x, &mesh_ptr->triangles[0].a);
+				// DBG(mesh_ptr->triangles[0].a)
+				accel.Build(uint32_t(mesh_ptr->triangles.size()), rt_mesh, nanort::TriangleSAHPred<float>(&vertices[0].x, &mesh_ptr->triangles[0].a), build_options);
+				mesh = std::move(mesh_ptr);
+			}
+		};
+
+		std::vector<mesh_info> infos;
+		std::unordered_map<size_t, Vec3> points;
+
+		{
+			PERF("\tCalculating chunks")
+			auto l = root->get_meshes();
+			infos.reserve(l.size());
+			cout_progress g{l.size()};
+			for (auto& m : l)
+			{
+				g.report();
+				if (is_physics_surface(m->name) && !m->vertices.empty())
+				{
+					infos.push_back(mesh_info());
+					auto& mi = *infos.rbegin();
+					mi.vertices.reserve(m->vertices.size());
+					for (const auto& v : m->vertices)
+					{
+						const auto p = Vec3{roundf(v.pos.x / large_grid_size), roundf(v.pos.y / large_grid_height), roundf(v.pos.z / large_grid_size)};
+						points[vec3_key(p)] = {p.x * large_grid_size, p.y * large_grid_height, p.z * large_grid_size};
+						mi.vertices.push_back(v.pos);
+					}
+					mi.finalize(std::move(m));
+				}
+			}
+		}
+
+		std::cout << "\tSurface meshes: " << infos.size() << std::endl;
+		std::cout << "\tLarge grid chunks to prepare: " << points.size() << std::endl;
+
+		if (points.size() > 20000)
+		{
+			if (points.size() > 90000)
+			{
+				small_grid_size = 4U;
+			}
+			else if (points.size() > 60000)
+			{
+				small_grid_size = 6U;
+			}
+			else if (points.size() > 30000)
+			{
+				small_grid_size = 8U;
+			}
+			small_grid_height = 2U;
+			std::cout << "\tToo many chunks, lowering resolution to " << small_grid_size << "x" << small_grid_height << std::endl;
+		}
+
+		struct grid_data
+		{
+			Vec3 center;
+			std::vector<float> rows_surface_y;
+
+			grid_data(const Vec3& center)
+				: center(center)
+			{
+				rows_surface_y.resize(small_grid_size * small_grid_size);
+			}
+
+			Vec3 calculate_base_pos(uint32_t x, uint32_t z) const
+			{
+				auto c = center;
+				c.x += ((float(x) + 0.5f) / float(small_grid_size) - 0.5f) * large_grid_size;
+				c.z += ((float(z) + 0.5f) / float(small_grid_size) - 0.5f) * large_grid_size;
+				return c;
+			}
+
+			Vec3 calculate_pos(uint32_t x, uint32_t y, uint32_t z) const
+			{
+				auto c = calculate_base_pos(x, z);
+				c.y = rows_surface_y[z * small_grid_size + x] + (float(y) + base_vertical_offset) / float(small_grid_height) * large_grid_height;
+				return c;
+			}
+
+			void set_ground_pos(uint32_t x, uint32_t z, float surface_y)
+			{
+				rows_surface_y[z * small_grid_size + x] = surface_y;
+			}
+		};
+		std::vector<grid_data> samples;
+		auto cast_hits = 0U;
+		auto cast_misses = 0U;
+
+		{
+			PERF("\tDistributing samples")
+			cout_progress g{points.size()};
+			samples.reserve(points.size());
+			for (const auto& p : points)
+			{
+				g.report();
+				samples.push_back(grid_data(p.second));
+				auto& gr = *samples.rbegin();
+
+				std::vector<mesh_info*> infos_local;
+				const auto& p_center = p.second;
+				for (auto& i : infos)
+				{
+					if (p_center.x > i.bb_min.x - large_grid_size / 2.f
+						&& p_center.z > i.bb_min.y - large_grid_size / 2.f
+						&& p_center.x < i.bb_max.x + large_grid_size / 2.f
+						&& p_center.z < i.bb_max.y + large_grid_size / 2.f)
+					{
+						infos_local.push_back(&i);
+					}
+				}
+
+				for (auto x = 0U; x < small_grid_size; ++x)
+				{
+					for (auto z = 0U; z < small_grid_size; ++z)
+					{
+						auto c = gr.calculate_base_pos(x, z);
+						auto surface_y = c.y - large_grid_height / 2.f;
+						auto surface_y_fault = FLT_MAX;
+						for (auto& mi : infos_local)
+						{
+							mi->get_y(c, surface_y, surface_y_fault);
+						}
+						if (surface_y_fault > 0.f)
+						{
+							++cast_misses;
+							/*for (auto& mi : infos_local)
+							{
+								mi->get_y_fallback(c, surface_y, surface_y_fault);
+							}*/
+						}
+						else ++cast_hits;
+						gr.set_ground_pos(x, z, surface_y);
+					}
+				}
+			}
+		}
+		std::cout << "\tAligned samples: " << cast_hits << " out of " << cast_hits + cast_misses
+			<< " (" << roundf(100.f * float(cast_hits) / float(cast_hits + cast_misses)) << "%)" << std::endl;
+
+		const auto extra_scene = std::make_shared<Scene>(root);
+		extra_scene->extra_receive_points.reserve(samples.size() * (small_grid_size * small_grid_size * small_grid_height));
+		for (const auto& p : samples)
+		{
+			for (auto x = 0U; x < small_grid_size; ++x)
+			{
+				for (auto z = 0U; z < small_grid_size; ++z)
+				{
+					for (auto y = 0U; y < small_grid_height; ++y)
+					{
+						extra_scene->extra_receive_points.push_back(p.calculate_pos(x, y, z));
+					}
+				}
+			}
+		}
+
+		auto cfg_extra_ao = cfg_bake;
+		cfg_extra_ao.ground_offset_factor = 1.f;
+		cfg_extra_ao.disable_normals = true;
+		cfg_extra_ao.sample_on_points = true;
+		cfg_extra_ao.use_ground_plane_blocker = false;
+		cfg_extra_ao.filter_mode = VERTEX_FILTER_AREA_BASED;
+		cfg_extra_ao.sample_offset = {0.f, 0.f, 0.f};
+
+		std::cout << "\tTotal number of AO grid samples: " << extra_scene->extra_receive_points.size() << std::endl;
+		std::vector<float> baked;
+		{
+			PERF("\tActual baking")
+			baked = std::move(bake_scene(extra_scene, cfg_extra_ao).extra_points_ao);
+		}
+
+		utils::blob data;
+		{
+			PERF("\tEncoding")
+			cout_progress g{samples.size()};
+
+			data << 1U;
+			data << large_grid_size;
+			data << large_grid_height;
+			data << uint16_t(small_grid_size);
+			data << uint16_t(small_grid_height);
+			data << base_vertical_offset;
+			data << uint32_t(samples.size());
+
+			auto j = 0U;
+			for (const auto& i : samples)
+			{
+				g.report();
+				data << i.center;
+				data.append(i.rows_surface_y.data(), sizeof(float) * i.rows_surface_y.size());
+				for (auto x = 0U; x < small_grid_size; ++x)
+				{
+					for (auto z = 0U; z < small_grid_size; ++z)
+					{
+						for (auto y = 0U; y < small_grid_height; ++y)
+						{
+							data << uint8_t(powf(std::min(std::max(baked[j++], 0.f), 1.f), VAO_ENCODE_POW) * 255.f);
+						}
+					}
+				}
+			}
+		}
+
+		ao.extra_entries["ExtraSamples.data"] = std::move(data);
+	}
+
+	void bake_extra_samples(baked_data& ao, const std::shared_ptr<Node>& root)
+	{
+		if (config.get(section, "AO_SAMPLES_PHYSICS_SURFACES", false))
+		{
+			bake_extra_samples_new(ao, root);
+		}
+		else
+		{
+			bake_extra_samples_old(ao, root,
+				config.get(section, "AO_SAMPLES_PIT_POINTS", false),
+				config.get(section, "AO_SAMPLES_AI_LANES", false));
+		}
+	}
+
 	baked_data bake_stuff(const std::shared_ptr<Node>& root)
 	{
 		// Generating AO
@@ -900,13 +1392,14 @@ struct file_processor
 			auto trees_meshes = root->find_meshes(resolve_filter(bake_as_trees));
 			trees_meshes -= root->find_meshes(resolve_filter(bake_as_grass));
 			auto trees_cfg_bake = cfg_bake;
-			trees_cfg_bake.scene_offset_scale = 0.5f;
+			trees_cfg_bake.scene_offset_scale_horizontal = 2.f;
+			trees_cfg_bake.scene_offset_scale_vertical = 0.5f;
 			trees_cfg_bake.disable_normals = true;
 			trees_cfg_bake.missing_normals_up = true;
 			trees_cfg_bake.use_ground_plane_blocker = false;
 			trees_cfg_bake.filter_mode = VERTEX_FILTER_AREA_BASED;
 			trees_scene->receivers = trees_meshes;
-			trees_scene->blockers -= trees_meshes;
+			// trees_scene->blockers -= trees_meshes;
 			ao.replace(bake_scene(trees_scene, trees_cfg_bake));
 		}
 
@@ -919,7 +1412,8 @@ struct file_processor
 			{
 				PERF("Special: baking grass")
 				const auto grass_meshes = root->find_meshes(resolve_filter(bake_as_grass));
-				grass_cfg_bake.scene_offset_scale = 0.5f;
+				grass_cfg_bake.scene_offset_scale_horizontal = 0.5f;
+				grass_cfg_bake.scene_offset_scale_vertical = 0.5f;
 				grass_cfg_bake.disable_normals = true;
 				grass_cfg_bake.missing_normals_up = true;
 				grass_cfg_bake.use_ground_plane_blocker = false;
@@ -937,126 +1431,7 @@ struct file_processor
 		}
 
 		// Generating AO for AI lane
-		const auto ao_samples_pits = config.get(section, "AO_SAMPLES_PIT_POINTS", false);
-		const auto ao_samples_ai_lanes = config.get(section, "AO_SAMPLES_AI_LANES", false);
-		if (ao_samples_pits || ao_samples_ai_lanes)
-		{
-			const auto ai_lanes_y_offset = config.get(section, "AO_SAMPLES_AI_LANES_Y_OFFSET", std::vector<float>{0.5f});
-			const auto ai_lanes_sides = config.get(section, "AO_SAMPLES_AI_LANES_SIDES", 0.67f) / 2.f;
-			const auto ai_lanes_pitlane = config.get(section, "AO_SAMPLES_AI_LANES_PITLINE_WIDTH", 4.f) / 2.f;
-			const auto ai_lanes_min_distance = config.get(section, "AO_SAMPLES_AI_LANES_MIN_DISTANCE", 4.f);
-
-			PERF("Special: baking extra AO samples")
-
-			auto mesh = std::make_shared<Mesh>();
-			mesh->name = "@@__EXTRA_AO@";
-			mesh->cast_shadows = false;
-			mesh->receive_shadows = true;
-			mesh->visible = true;
-			mesh->material = std::make_shared<Material>();
-			mesh->signature_point = Vec3{};
-
-			static const float2 poisson_disk[10] = {
-				optix::make_float2(-0.2027472f, -0.7174203f),
-				optix::make_float2(-0.4839617f, -0.1232477f),
-				optix::make_float2(0.4924171f, -0.06338801f),
-				optix::make_float2(-0.6403998f, 0.6834511f),
-				optix::make_float2(-0.8817205f, -0.4650014f),
-				optix::make_float2(0.04554421f, 0.1661989f),
-				optix::make_float2(0.1042245f, 0.9336259f),
-				optix::make_float2(0.6152743f, 0.6344957f),
-				optix::make_float2(0.5085323f, -0.7106467f),
-				optix::make_float2(-0.9731231f, 0.1328296f),
-			};
-
-			if (ao_samples_pits)
-			{
-				for (const auto& n : root->find_nodes(resolve_filter({"AC_PIT_?"})))
-				{
-					mesh->vertices.push_back({n->matrix[3], n->matrix[7], n->matrix[11]});
-					for (auto p : poisson_disk)
-					{
-						mesh->vertices.push_back({n->matrix[3] + p.x * 4.f, n->matrix[7], n->matrix[11] + p.y * 4.f});
-					}
-				}
-			}
-
-			if (ao_samples_ai_lanes)
-			{
-				const auto ai_fast = load_ailane(get_ai_lane_filename("fast_lane.ai"));
-				const auto ai_pits = load_ailane(get_ai_lane_filename("pit_lane.ai"));
-
-				for (const auto& ai : {ai_fast, ai_pits})
-				{
-					auto last_length = -ai_lanes_min_distance;
-					for (const auto& v : ai)
-					{
-						if (v.length - last_length >= ai_lanes_min_distance)
-						{
-							mesh->vertices.push_back(v.point);
-							last_length = v.length;
-						}
-					}
-				}
-
-				if (ai_lanes_sides > 0.f)
-				{
-					for (const auto& ai : {ai_fast, ai_pits})
-					{
-						auto last_length = -ai_lanes_min_distance;
-						for (auto i = 1U; i < ai.size(); i++)
-						{
-							if (ai[i - 1].length - last_length >= ai_lanes_min_distance)
-							{
-								const auto& v0 = *(float3*)&ai[i - 1].point;
-								const auto& v1 = *(float3*)&ai[i].point;
-								auto side = optix::normalize(optix::cross(v1 - v0, float3{0.f, 1.f, 0.f}));
-								auto s0 = (ai[i - 1].side_left + ai[i - 1].side_left) * ai_lanes_sides;
-								auto s1 = (ai[i - 1].side_right + ai[i - 1].side_right) * ai_lanes_sides;
-								if (s0 == 0) s0 = ai_lanes_pitlane;
-								if (s1 == 0) s1 = ai_lanes_pitlane;
-								if (s0 > 0.f)
-								{
-									const auto p0 = (v0 + v1) / 2.f - side * s0;
-									mesh->vertices.push_back(*(Vec3*)&p0);
-								}
-								if (s1 > 0.f)
-								{
-									const auto p1 = (v0 + v1) / 2.f + side * s1;
-									mesh->vertices.push_back(*(Vec3*)&p1);
-								}
-								last_length = ai[i - 1].length;
-							}
-						}
-					}
-				}
-			}
-
-			auto cfg_extra_ao = cfg_bake;
-			cfg_extra_ao.ground_offset_factor = 2.f;
-			cfg_extra_ao.disable_normals = true;
-			cfg_extra_ao.sample_on_points = true;
-			cfg_extra_ao.use_ground_plane_blocker = false;
-			cfg_extra_ao.filter_mode = VERTEX_FILTER_AREA_BASED;
-
-			const auto extra_scene = std::make_shared<Scene>(root);
-			extra_scene->receivers = {mesh};
-
-			baked_data extra_ao;
-			for (auto offset : ai_lanes_y_offset)
-			{
-				cfg_extra_ao.sample_offset = {0.f, offset, 0.f};
-				if (extra_ao.entries.empty())
-				{
-					extra_ao = bake_scene(extra_scene, cfg_extra_ao);
-				}
-				else
-				{
-					extra_ao.max(bake_scene(extra_scene, cfg_extra_ao));
-				}
-			}
-			ao.extend(extra_ao);
-		}
+		bake_extra_samples(ao, root);
 
 		// Generating AO for driver
 		if (FEATURE_ACTIVE("DRIVER_RECEIVES_SHADOWS") && driver_root)
@@ -1230,7 +1605,8 @@ struct file_processor
 				{
 					if (FEATURE_ACTIVE("DISTANT_LODS_INCREASE_OFFSET"))
 					{
-						lod_cfg_bake.scene_offset_scale = 0.2f;
+						lod_cfg_bake.scene_offset_scale_vertical = 0.2f;
+						lod_cfg_bake.scene_offset_scale_horizontal = 0.2f;
 					}
 
 					if (FEATURE_ACTIVE("DISTANT_LODS_AREA_BASED"))
@@ -1287,7 +1663,7 @@ struct file_processor
 		}
 
 		// Generating alternative AO with driver shadows
-		if (FEATURE_ACTIVE("DRIVER_CASTS_SHADOWS"))
+		if (FEATURE_ACTIVE("DRIVER_CASTS_SHADOWS") && driver_root)
 		{
 			const auto driver_shadow_targets = root->find_nodes(resolve_filter({"@COCKPIT_HR", "@COCKPIT_LR"}));
 			const auto driver_shadow_blockers = std::make_shared<Scene>(root)->blockers + std::make_shared<Scene>(driver_root)->blockers;
@@ -1296,7 +1672,7 @@ struct file_processor
 			{
 				driver_shadow_targets_scene->receivers -= n->get_meshes();
 			}
-			
+
 			auto ao_alt = bake_scene(driver_shadow_targets_scene, driver_shadow_blockers, cfg_bake, true);
 			bake_animations(root, driver_shadow_targets, driver_shadow_blockers, cfg_bake, ao_alt);
 			ao.set_alternative_set(ao_alt);
@@ -1308,7 +1684,7 @@ struct file_processor
 			std::vector<std::string> names;
 			auto mult = config.get(section, "EXTRA_ADJUSTMENT_" + std::to_string(i) + "_MULT", 1.f);
 			auto offset = config.get(section, "EXTRA_ADJUSTMENT_" + std::to_string(i) + "_OFFSET", 0.f);
-			auto exp = config.get(section, "EXTRA_ADJUSTMENT_" + std::to_string(i) + "_GAMMA", 
+			auto exp = config.get(section, "EXTRA_ADJUSTMENT_" + std::to_string(i) + "_GAMMA",
 				config.get(section, "EXTRA_ADJUSTMENT_" + std::to_string(i) + "_EXP", 1.f));
 			auto primary_only = config.get(section, "EXTRA_ADJUSTMENT_" + std::to_string(i) + "_PRIMARY_ONLY", false);
 			if (config.try_get(section, "EXTRA_ADJUSTMENT_" + std::to_string(i) + "_NAMES", names)
@@ -1328,7 +1704,7 @@ struct file_processor
 						}
 					}
 				}
-				
+
 				{
 					dimmed_meshes += driver_root->find_meshes(resolve_filter(names));
 					if (car_mode)
@@ -1423,72 +1799,72 @@ int main(int argc, const char** argv)
 	#ifdef USE_TRYCATCH
 	try
 	{
-	#endif
-	SetConsoleOutputCP(CP_UTF8);
+		#endif
+		SetConsoleOutputCP(CP_UTF8);
 
-	bool is_cuda_available;
-	int cuda_version;
-	const auto cuda_result = cudaRuntimeGetVersion(&cuda_version);
-	if (cuda_result == cudaSuccess && cuda_version)
-	{
-		is_cuda_available = true;
-		std::cout << "Installed CUDA toolkit: " << cuda_version / 1000 << "." << cuda_version / 10 % 100 << "\n";
-	}
-	else
-	{
-		is_cuda_available = false;
-		std::cout << "CUDA toolkit is not installed (you can get it here: https://developer.nvidia.com/cuda-80-ga2-download-archive, at least v8.0 is recommended)\n";
-	}
-
-	if (is_cuda_available)
-	{
-		const auto cap = cuda_capabilities::get();
-		if (cap.query_failed)
+		bool is_cuda_available;
+		int cuda_version;
+		const auto cuda_result = cudaRuntimeGetVersion(&cuda_version);
+		if (cuda_result == cudaSuccess && cuda_version)
 		{
-			std::cout << "Failed to check existance of any CUDA-compatible devices\n";
-			is_cuda_available = false;
-		}
-		else if (cap.device_count == 0)
-		{
-			std::cout << "No CUDA-compatible devices found\n";
-			is_cuda_available = false;
-		}
-		else if (cap.device_count == 1)
-		{
-			std::cout << "Found a CUDA-compatible device (" << cap.info() << ")\n";
+			is_cuda_available = true;
+			std::cout << "Installed CUDA toolkit: " << cuda_version / 1000 << "." << cuda_version / 10 % 100 << "\n";
 		}
 		else
 		{
-			std::cout << "Found " << cap.device_count << " CUDA-compatible devices (best one: " << cap.info() << ")\n";
+			is_cuda_available = false;
+			std::cout << "CUDA toolkit is not installed (you can get it here: https://developer.nvidia.com/cuda-80-ga2-download-archive, at least v8.0 is recommended)\n";
 		}
-	}
 
-	if (argc == 1)
-	{
-		wchar_t filename[1024]{};
-		OPENFILENAME ofn{};
-		ofn.lStructSize = sizeof ofn;
-		ofn.hwndOwner = nullptr;
-		ofn.lpstrFilter = L"AC Models\0*.kn5;*.ini\0Any Files\0*.*\0";
-		ofn.lpstrFile = filename;
-		ofn.nMaxFile = 1024;
-		ofn.lpstrTitle = L"Choose a KN5 or INI file (for tracks) to make a VAO patch for";
-		ofn.Flags = OFN_DONTADDTORECENT | OFN_FILEMUSTEXIST;
-		if (GetOpenFileNameW(&ofn))
+		if (is_cuda_available)
 		{
-			file_processor(utils::path(filename), is_cuda_available).run();
+			const auto cap = cuda_capabilities::get();
+			if (cap.query_failed)
+			{
+				std::cout << "Failed to check existance of any CUDA-compatible devices\n";
+				is_cuda_available = false;
+			}
+			else if (cap.device_count == 0)
+			{
+				std::cout << "No CUDA-compatible devices found\n";
+				is_cuda_available = false;
+			}
+			else if (cap.device_count == 1)
+			{
+				std::cout << "Found a CUDA-compatible device (" << cap.info() << ")\n";
+			}
+			else
+			{
+				std::cout << "Found " << cap.device_count << " CUDA-compatible devices (best one: " << cap.info() << ")\n";
+			}
 		}
-	}
-	else
-	{
-		for (auto i = 1; i < argc; i++)
-		{
-			file_processor(argv[i], is_cuda_available).run();
-		}
-	}
 
-	return 0;
-	#ifdef USE_TRYCATCH
+		if (argc == 1)
+		{
+			wchar_t filename[1024]{};
+			OPENFILENAME ofn{};
+			ofn.lStructSize = sizeof ofn;
+			ofn.hwndOwner = nullptr;
+			ofn.lpstrFilter = L"AC Models\0*.kn5;*.ini\0Any Files\0*.*\0";
+			ofn.lpstrFile = filename;
+			ofn.nMaxFile = 1024;
+			ofn.lpstrTitle = L"Choose a KN5 or INI file (for tracks) to make a VAO patch for";
+			ofn.Flags = OFN_DONTADDTORECENT | OFN_FILEMUSTEXIST;
+			if (GetOpenFileNameW(&ofn))
+			{
+				file_processor(utils::path(filename), is_cuda_available).run();
+			}
+		}
+		else
+		{
+			for (auto i = 1; i < argc; i++)
+			{
+				file_processor(argv[i], is_cuda_available).run();
+			}
+		}
+
+		return 0;
+		#ifdef USE_TRYCATCH
 	}
 	catch (const std::exception& e)
 	{

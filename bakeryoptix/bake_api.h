@@ -35,6 +35,7 @@
 #include <utils/std_ext.h>
 
 // ReSharper disable once CppUnusedIncludeDirective
+#include <dds/dds_loader.h>
 #include <utils/dbg_output.h>
 
 namespace bake
@@ -100,12 +101,13 @@ namespace bake
 		uint32_t depth_mode{};
 		std::vector<MaterialProperty> vars;
 		std::vector<MaterialResource> resources;
+		std::shared_ptr<dds_loader> texture{};
 
 		const MaterialProperty* get_var_or_null(const std::string& cs)
 		{
 			for (const auto& v : vars)
 			{
-				if (v.name == name) return &v;
+				if (v.name == cs) return &v;
 			}
 			return nullptr;
 		}
@@ -114,7 +116,7 @@ namespace bake
 		{
 			for (const auto& v : resources)
 			{
-				if (v.name == name) return &v;
+				if (v.name == cs) return &v;
 			}
 			return nullptr;
 		}
@@ -123,6 +125,11 @@ namespace bake
 	struct Triangle
 	{
 		uint32_t a, b, c;
+	};
+
+	struct Vec2
+	{
+		float x, y;
 	};
 
 	struct Vec3
@@ -135,19 +142,31 @@ namespace bake
 		float x, y, z, w;
 	};
 
+	struct __declspec(align(4)) MeshVertex
+	{
+		Vec3 pos;
+		Vec2 tex;
+		float _pad;
+		MeshVertex() : pos{}, tex{}, _pad(0.f) { }
+		MeshVertex(Vec3 p, Vec2 t) : pos(p), tex(t), _pad(0.f) { }
+	};
+
 	struct Mesh : NodeBase
 	{
 		Vec3 signature_point;
 		float extra_samples_offset{};
-		std::vector<Vec3> vertices;
+		std::vector<MeshVertex> vertices;
 		std::vector<Vec3> normals;
 		std::vector<Triangle> triangles;
 		std::shared_ptr<Material> material;
 		float lod_in{};
 		float lod_out{};
+		int layer = 0;
 		bool cast_shadows = true;
 		bool receive_shadows = true;
-		bool visible = true;
+		bool is_visible = true;
+		bool is_renderable = true;
+		bool is_transparent = false;
 
 		void update_matrix() override
 		{
@@ -166,12 +185,10 @@ namespace bake
 		NodeTransformation tranform = NodeTransformation::identity();
 		std::shared_ptr<Node> node{};
 
-		Bone()
-		{ }
+		Bone() { }
 
 		Bone(std::string name, const NodeTransformation& matrix = NodeTransformation::identity())
-			: name(std::move(name)), tranform(matrix)
-		{ }
+			: name(std::move(name)), tranform(matrix) { }
 
 		void solve(const std::shared_ptr<Node>& root);
 	};
@@ -181,7 +198,7 @@ namespace bake
 		std::vector<Bone> bones;
 		std::vector<Vec4> weights;
 		std::vector<Vec4> bone_ids;
-		std::vector<Vec3> vertices_orig;
+		std::vector<MeshVertex> vertices_orig;
 		std::vector<Vec3> normals_orig;
 		void resolve(const Node* node);
 	};
@@ -254,8 +271,9 @@ namespace bake
 	{
 		Scene(const std::shared_ptr<Node>& root);
 		Scene(const std::vector<std::shared_ptr<Node>>& nodes);
-
+		
 		std::vector<std::shared_ptr<Mesh>> receivers;
+		std::vector<Vec3> extra_receive_points;
 		SceneBlockers blockers;
 
 		float bbox_min[3]{FLT_MAX, FLT_MAX, FLT_MAX};
@@ -269,8 +287,7 @@ namespace bake
 		std::vector<std::shared_ptr<HierarchyNode>> children;
 
 		HierarchyNode(std::string name, const NodeTransformation& matrix = NodeTransformation::identity())
-			: name(std::move(name)), matrix_local(matrix)
-		{ }
+			: name(std::move(name)), matrix_local(matrix) { }
 
 		void align(const std::shared_ptr<bake::Node>& root) const;
 	};

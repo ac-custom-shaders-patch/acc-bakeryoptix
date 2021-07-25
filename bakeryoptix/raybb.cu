@@ -30,28 +30,32 @@
 #include <optixu/optixu_aabb_namespace.h>
 #include <optixu/optixu_math_namespace.h>
 
-rtBuffer<float3> attributesBuffer;
+struct vertex
+{
+	float3 pos;
+	float3 tex;
+};
+
+rtBuffer<vertex> attributesBuffer;
 rtBuffer<uint3> indicesBuffer;
 
 // Axis Aligned Bounding Box routine for indexed interleaved triangle data.
 RT_PROGRAM void raybb(int primitiveIndex, float result[6])
 {
-  const uint3 indices = indicesBuffer[primitiveIndex];
+	const uint3 indices = indicesBuffer[primitiveIndex];
+	const float3 v0 = attributesBuffer[indices.x].pos;
+	const float3 v1 = attributesBuffer[indices.y].pos;
+	const float3 v2 = attributesBuffer[indices.z].pos;
+	const float area = optix::length(optix::cross(v1 - v0, v2 - v0));
 
-  const float3 v0 = attributesBuffer[indices.x];
-  const float3 v1 = attributesBuffer[indices.y];
-  const float3 v2 = attributesBuffer[indices.z];
-  const float area = optix::length(optix::cross(v1 - v0, v2 - v0));
-
-  optix::Aabb *aabb = (optix::Aabb *) result;
-
-  if (0.0f < area && !isinf(area))
-  {
-    aabb->m_min = fminf(fminf(v0, v1), v2);
-    aabb->m_max = fmaxf(fmaxf(v0, v1), v2);
-  }
-  else
-  {
-    aabb->invalidate();
-  }
+	optix::Aabb* aabb = (optix::Aabb*)result;
+	if (0.0f < area && !isinf(area))
+	{
+		aabb->m_min = fminf(fminf(v0, v1), v2);
+		aabb->m_max = fmaxf(fmaxf(v0, v1), v2);
+	}
+	else
+	{
+		aabb->invalidate();
+	}
 }

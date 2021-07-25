@@ -57,20 +57,21 @@ float halton(const unsigned int index)
 	return result;
 }
 
-float3 faceforward(const float3& normal, const float3& geom_normal)
+inline float3 faceforward(const float3& normal, const float3& geom_normal, bool fix_incorrect_normals)
 {
-	if (dot(normal, geom_normal) > 0.0f) return normal;
-	return -normal;
+	if (fix_incorrect_normals && dot(normal, geom_normal) < 0.4f) return geom_normal;
+	return normal;
 }
 
-float3 operator*(const Matrix4x4& mat, const float3& v)
+inline float3 operator*(const Matrix4x4& mat, const float3& v)
 {
 	return make_float3(mat * make_float4(v, 1.0f));
 }
 
 void sample_triangle(const Matrix4x4& xform, const Matrix4x4& xform_invtrans, const float3** verts, const float3** normals,
 	const size_t tri_idx, const size_t tri_sample_count, const double tri_area, const unsigned base_seed, const float extra_offset,
-	const bool missing_normals_up, float3* sample_positions, float3* sample_norms, float3* sample_face_norms, bake::SampleInfo* sample_infos)
+	const bool missing_normals_up, float3* sample_positions, float3* sample_norms, float3* sample_face_norms, bake::SampleInfo* sample_infos,
+	const bool fix_incorrect_normals)
 {
 	const auto& v0 = *verts[0];
 	const auto& v1 = *verts[1];
@@ -83,9 +84,9 @@ void sample_triangle(const Matrix4x4& xform, const Matrix4x4& xform_invtrans, co
 	float3 n0, n1, n2;
 	if (normals)
 	{
-		n0 = faceforward(*normals[0], face_normal);
-		n1 = faceforward(*normals[1], face_normal);
-		n2 = faceforward(*normals[2], face_normal);
+		n0 = faceforward(*normals[0], face_normal, fix_incorrect_normals);
+		n1 = faceforward(*normals[1], face_normal, fix_incorrect_normals);
+		n2 = faceforward(*normals[2], face_normal, fix_incorrect_normals);
 	}
 	else
 	{
@@ -165,6 +166,7 @@ void sample_instance(
 	const size_t min_samples_per_triangle,
 	const bool disable_normals,
 	const bool missing_normals_up,
+	const bool fix_incorrect_normals,
 	bake::AOSamples& ao_samples)
 {
 	// Setup access to mesh data
@@ -220,7 +222,7 @@ void sample_instance(
 			normals = norms;
 		}
 		sample_triangle(xform, xform_invtrans, verts, normals, tri_idx, tri_sample_counts[tri_idx], tri_areas[tri_idx], seed, mesh->extra_samples_offset, missing_normals_up,
-			sample_positions + sample_idx, sample_norms + sample_idx, sample_face_norms + sample_idx, sample_infos + sample_idx);
+			sample_positions + sample_idx, sample_norms + sample_idx, sample_face_norms + sample_idx, sample_infos + sample_idx, fix_incorrect_normals);
 		sample_idx += tri_sample_counts[tri_idx];
 	}
 
@@ -228,7 +230,7 @@ void sample_instance(
 }
 
 void bake::sample_instances(const Scene& scene, const size_t* num_samples_per_instance, const size_t min_samples_per_triangle,
-	const bool disable_normals, const bool missing_normals_up, AOSamples& ao_samples)
+	const bool disable_normals, const bool missing_normals_up, const bool fix_incorrect_normals, AOSamples& ao_samples)
 {
 	std::vector<size_t> sample_offsets(scene.receivers.size());
 	{
@@ -257,7 +259,8 @@ void bake::sample_instances(const Scene& scene, const size_t* num_samples_per_in
 		instance_ao_samples.sample_infos = ao_samples.sample_infos + sample_offset;
 
 		Matrix4x4 xform(scene.receivers[i]->matrix._Elems);
-		sample_instance(scene.receivers[i].get(), xform, unsigned(i), min_samples_per_triangle, disable_normals, missing_normals_up, instance_ao_samples);
+		sample_instance(scene.receivers[i].get(), xform, unsigned(i), min_samples_per_triangle, 
+			disable_normals, missing_normals_up, fix_incorrect_normals, instance_ao_samples);
 	}
 }
 
@@ -311,7 +314,6 @@ size_t bake::distribute_samples(
 			const auto& mesh = scene.receivers[idx];
 			const Matrix4x4 xform(scene.receivers[idx]->matrix._Elems);
 			const int3* tri_vertex_indices = reinterpret_cast<const int3*>(&mesh->triangles[0]);
-			const unsigned vertex_stride_bytes = 3 * sizeof(float);
 			for (size_t tri_idx = 0; tri_idx < mesh->triangles.size(); ++tri_idx)
 			{
 				const auto& tri = tri_vertex_indices[tri_idx];

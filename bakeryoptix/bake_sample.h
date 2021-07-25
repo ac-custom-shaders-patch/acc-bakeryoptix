@@ -31,5 +31,6 @@
 namespace bake
 {
 	size_t distribute_samples(const Scene& scene, size_t min_samples_per_triangle, size_t requested_num_samples, size_t* num_samples_per_instance);
-	void sample_instances(const Scene& scene, const size_t* num_samples_per_instance, size_t min_samples_per_triangle, bool disable_normals, bool missing_normals_up, AOSamples& ao_samples);
+	void sample_instances(const Scene& scene, const size_t* num_samples_per_instance, size_t min_samples_per_triangle, 
+		bool disable_normals, bool missing_normals_up, bool fix_incorrect_normals, AOSamples& ao_samples);
 }

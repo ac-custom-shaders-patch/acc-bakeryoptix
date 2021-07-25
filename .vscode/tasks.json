@@ -1,0 +1,25 @@
+{
+  // See https://go.microsoft.com/fwlink/?LinkId=733558
+  // for the documentation about the tasks.json format
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Bake cars",
+      "type": "shell",
+      "command": "nodesh bake-cars.jsh",
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "echo": false,
+        "clear": true,
+        "focus": false,
+        "showReuseMessage": false,
+        "panel": "shared",
+        "reveal": "always"
+      }
+    }
+  ]
+}

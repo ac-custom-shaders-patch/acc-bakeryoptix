@@ -34,148 +34,253 @@
 
 #include <cuda/buffer.h>
 #include <optixu/optixu_matrix_namespace.h>
-#include <optix_prime/optix_primepp.h>
+#include <optixu/optixu_math_namespace.h>
+#include <optixu/optixpp_namespace.h>
+#include <optix.h>
 #include <bake_kernels__cpu.h>
 #include <chrono>
+#include <ptx_programs.h>
 #include <utils/cout_progress.h>
+#include <utils/string_operations.h>
 
 using namespace optix;
-using namespace prime;
 
-namespace
+inline size_t idiv_ceil(const size_t x, const size_t y)
 {
-	void create_instances(Context& context,
-		const std::vector<bake::Mesh*>& meshes,
-		const bool use_cuda,
-		// output, to keep allocations around
-		std::vector<Buffer<float3>*>& allocated_vertex_buffers, std::vector<Buffer<int3>*>& allocated_index_buffers,
-		std::vector<Model>& models, std::vector<RTPmodel>& prime_instances, std::vector<Matrix4x4>& transforms)
+	return (x + y - 1) / y;
+}
+
+Geometry ao_optix_geometry(Handle<ContextObj>& ctx, bake::Mesh* mesh, const Program& bb, const Program& intersection)
+{
+	optix::Geometry geometry(nullptr);
+
+	try
 	{
-		const auto buffer_type = use_cuda ? RTP_BUFFER_TYPE_CUDA_LINEAR : RTP_BUFFER_TYPE_HOST;
-		const auto copy_type = use_cuda ? cudaMemcpyHostToDevice : cudaMemcpyHostToHost;
+		geometry = ctx->createGeometry();
 
-		// For sharing identical buffers between Models
-		std::map<float*, Buffer<float3>*> unique_vertex_buffers;
-		std::map<unsigned int*, Buffer<int3>*> unique_index_buffers;
+		optix::Buffer attributesBuffer = ctx->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_USER);
+		attributesBuffer->setElementSize(sizeof(bake::MeshVertex));
+		attributesBuffer->setSize(mesh->vertices.size());
 
-		const auto model_offset = models.size();
-		models.reserve(models.size() + meshes.size());
-		for (auto mesh : meshes)
-		{
-			auto model = context->createModel();
+		void* dst = attributesBuffer->map(0, RT_BUFFER_MAP_WRITE_DISCARD);
+		memcpy(dst, mesh->vertices.data(), sizeof(bake::MeshVertex) * mesh->vertices.size());
+		attributesBuffer->unmap();
 
-			// Allocate or reuse vertex buffer and index buffer
-			Buffer<float3>* vertex_buffer = nullptr;
-			if (unique_vertex_buffers.find(&mesh->vertices[0].x) != unique_vertex_buffers.end())
-			{
-				vertex_buffer = unique_vertex_buffers.find(&mesh->vertices[0].x)->second;
-			}
-			else
-			{
-				// Note: copy disabled for Buffer, so need pointer here
-				vertex_buffer = new Buffer<float3>(mesh->vertices.size(), buffer_type, UNLOCKED);
-				cudaMemcpy(vertex_buffer->ptr(), &mesh->vertices[0].x, vertex_buffer->size_in_bytes(), copy_type);
-				unique_vertex_buffers[&mesh->vertices[0].x] = vertex_buffer;
-				allocated_vertex_buffers.push_back(vertex_buffer);
-			}
+		optix::Buffer indicesBuffer = ctx->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_UNSIGNED_INT3, mesh->triangles.size());
+		dst = indicesBuffer->map(0, RT_BUFFER_MAP_WRITE_DISCARD);
+		memcpy(dst, mesh->triangles.data(), sizeof(optix::uint3) * mesh->triangles.size());
+		indicesBuffer->unmap();
 
-			Buffer<int3>* index_buffer = nullptr;
-			if (unique_index_buffers.find(&mesh->triangles[0].a) != unique_index_buffers.end())
-			{
-				index_buffer = unique_index_buffers.find(&mesh->triangles[0].a)->second;
-			}
-			else
-			{
-				index_buffer = new Buffer<int3>(mesh->triangles.size(), buffer_type);
-				cudaMemcpy(index_buffer->ptr(), &mesh->triangles[0].a, index_buffer->size_in_bytes(), copy_type);
-				unique_index_buffers[&mesh->triangles[0].a] = index_buffer;
-				allocated_index_buffers.push_back(index_buffer);
-			}
+		geometry->setBoundingBoxProgram(bb);
+		geometry->setIntersectionProgram(intersection);
 
-			model->setTriangles(
-				index_buffer->count(), index_buffer->type(), index_buffer->ptr(),
-				vertex_buffer->count(), vertex_buffer->type(), vertex_buffer->ptr(), vertex_buffer->stride()
-			);
-			model->update(0);
-			models.push_back(model); // Model is ref counted, so need to return it to prevent destruction
-		}
-
-		prime_instances.reserve(prime_instances.size() + meshes.size());
-		for (auto i = 0U; i < meshes.size(); ++i)
-		{
-			const auto index = model_offset + i;
-			auto rtp_model = models[index]->getRTPmodel();
-			prime_instances.push_back(rtp_model);
-			transforms.emplace_back(meshes[i]->matrix._Elems);
-		}
+		geometry["attributesBuffer"]->setBuffer(attributesBuffer);
+		geometry["indicesBuffer"]->setBuffer(indicesBuffer);
+		geometry->setPrimitiveCount(uint32_t(mesh->triangles.size()));
 	}
-
-	inline size_t idiv_ceil(const size_t x, const size_t y)
+	catch (optix::Exception& e)
 	{
-		return (x + y - 1) / y;
+		std::cerr << e.getErrorString() << std::endl;
 	}
+	return geometry;
+}
 
-	void generate_rays(bool use_cuda, unsigned seed, int i, int j, int sqrt_passes, float scene_offset, const bake::AOSamples& ao_samples, Buffer<bake::Ray>& rays)
-	{
-		if (use_cuda)
-		{
-			generate_rays_device(seed, i, j, sqrt_passes, scene_offset, ao_samples, rays.ptr());
-		}
-		else
-		{
-			generate_rays_host(seed, i, j, sqrt_passes, scene_offset, ao_samples, rays.ptr());
-		}
-	}
+optix::Geometry create_plane(Handle<ContextObj>& ctx, const Program& bb, const Program& intersection)
+{
+	static bake::Mesh mesh;
+	mesh.triangles.push_back(bake::Triangle{0, 1, 2});
+	mesh.triangles.push_back(bake::Triangle{0, 2, 3});
+	mesh.vertices.push_back({bake::Vec3{-1.f, 0.f, -1.f}, bake::Vec2{}});
+	mesh.vertices.push_back({bake::Vec3{1.f, 0.f, -1.f}, bake::Vec2{}});
+	mesh.vertices.push_back({bake::Vec3{1.f, 0.f, 1.f}, bake::Vec2{}});
+	mesh.vertices.push_back({bake::Vec3{-1.f, 0.f, 1.f}, bake::Vec2{}});
+	return ao_optix_geometry(ctx, &mesh, bb, intersection);
+}
 
-	void update_ao(bool use_cuda, size_t num_samples, float max_distance, Buffer<float>& hits, Buffer<float>& ao)
+static std::string m_builder = std::string("Trbvh");
+
+void set_acceleration_properties(optix::Acceleration acceleration)
+{
+	// To speed up the acceleration structure build for triangles, skip calls to the bounding box program and
+	// invoke the special splitting BVH builder for indexed triangles by setting the necessary acceleration properties.
+	// Using the fast Trbvh builder which does splitting has a positive effect on the rendering performanc as well.
+	if (m_builder == std::string("Trbvh") || m_builder == std::string("Sbvh"))
 	{
-		if (use_cuda)
-		{
-			bake::update_ao_device(num_samples, max_distance, hits.ptr(), ao.ptr());
-		}
-		else
-		{
-			bake::update_ao_host(num_samples, max_distance, hits.ptr(), ao.ptr());
-		}
+		// This requires that the position is the first element and it must be float x, y, z.
+		acceleration->setProperty("vertex_buffer_name", "attributesBuffer");
+		acceleration->setProperty("vertex_buffer_stride", "24");
+
+		acceleration->setProperty("index_buffer_name", "indicesBuffer");
+		acceleration->setProperty("index_buffer_stride", "12");
 	}
 }
 
-void bake::ao_optix_prime(
-	const std::vector<Mesh*>& blockers,
-	const AOSamples& ao_samples,
-	const int rays_per_sample,
-	const float scene_offset_scale,
-	const float scene_maxdistance_scale,
-	const float* bbox_min,
-	const float* bbox_max,
-	float* ao_values,
-	bool use_cuda)
+Program load_program(Handle<ContextObj>& ctx, const char* name, const std::string& program)
 {
-	auto ctx = Context::create(use_cuda ? RTP_CONTEXT_TYPE_CUDA : RTP_CONTEXT_TYPE_CPU);
+	// std::cout << "Loading shader: " << name << std::endl;
+	// return ctx->createProgramFromPTXString(program, name);
+	return ctx->createProgramFromPTXFile(std::string("C:/Development/acc-bakeryoptix/x64/Release/") + name + ".cu.ptx", name);
+}
 
-	std::vector<Model> models;
-	std::vector<RTPmodel> prime_instances;
-	std::vector<Matrix4x4> transforms;
-	std::vector<Buffer<float3>*> allocated_vertex_buffers;
-	std::vector<Buffer<int3>*> allocated_index_buffers;
-	create_instances(ctx, blockers, use_cuda, allocated_vertex_buffers, allocated_index_buffers, models, prime_instances, transforms);
+struct cuda_textures_loader
+{
+	Context& ctx;
+	std::map<const dds_loader*, TextureSampler> loaded;
 
-	auto scene_model = ctx->createModel();
-	scene_model->setInstances(prime_instances.size(), RTP_BUFFER_TYPE_HOST, &prime_instances[0],
-		RTP_BUFFER_FORMAT_TRANSFORM_FLOAT4x4, RTP_BUFFER_TYPE_HOST, &transforms[0]);
-	scene_model->update(0);
+	cuda_textures_loader(Context& ctx) : ctx(ctx) { }
 
-	auto query = scene_model->createQuery(RTP_QUERY_TYPE_ANY);
+	TextureSampler load_texture(const dds_loader& loader)
+	{
+		const auto f = loaded.find(&loader);
+		if (f != loaded.end())
+		{
+			return f->second;
+		}
+
+		optix::Buffer pixel_buffer = ctx->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_UNSIGNED_BYTE4, loader.width, loader.height);
+		void* buffer_data = pixel_buffer->map();
+		std::memcpy(buffer_data, (*loader.data).data(), loader.width * loader.height * 4);
+		pixel_buffer->unmap();
+
+		// create texture sampler
+		TextureSampler sampler = ctx->createTextureSampler();
+		sampler->setWrapMode(0, RT_WRAP_REPEAT);
+		sampler->setWrapMode(1, RT_WRAP_REPEAT);
+		sampler->setWrapMode(2, RT_WRAP_REPEAT);
+		sampler->setIndexingMode(RT_TEXTURE_INDEX_NORMALIZED_COORDINATES);
+		sampler->setMaxAnisotropy(1.0f);
+		sampler->setReadMode(RT_TEXTURE_READ_ELEMENT_TYPE);
+		sampler->setFilteringModes(RT_FILTER_LINEAR, RT_FILTER_LINEAR, RT_FILTER_NEAREST);
+		sampler->setBuffer(pixel_buffer);
+		return loaded[&loader] = sampler;
+	}
+};
+
+void bake::ao_optix_prime(const std::vector<Mesh*>& blockers, const AOSamples& ao_samples, const int rays_per_sample, const float albedo, const uint bounce_counts,
+	const float scene_offset_scale_horizontal, const float scene_offset_scale_vertical, const float trees_light_pass_chance, float* ao_values)
+{
+	auto ctx = Context::create();
+	// ctx->setDevices(devices.begin(), devices.end())
+
+	ctx->setEntryPointCount(1); // 0 = render
+	ctx->setRayTypeCount(1);    // 0 = radiance;
+	ctx->setStackSize(1024);
+	//ctx->setPrintEnabled(true);
+	//ctx->setExceptionEnabled(RT_EXCEPTION_ALL, true);
+
+	cuda_textures_loader textures_loader(ctx);
+	const auto bb = load_program(ctx, "raybb", ptx_program_raybb());
+	const auto intersection = load_program(ctx, "rayintersection", ptx_program_rayintersection());
+	const auto hit = load_program(ctx, "rayhit", ptx_program_rayhit());
+	const auto anyhit = load_program(ctx, "rayanyhit", ptx_program_rayanyhit());
+	const auto anyhit_tree = load_program(ctx, "rayanyhit_tree", ptx_program_rayanyhit_tree());
+
+	auto mat_opaque = ctx->createMaterial();
+	mat_opaque->setClosestHitProgram(0, hit);
+
+	auto mat_alphatest = ctx->createMaterial();
+	mat_alphatest->setAnyHitProgram(0, anyhit);
+	mat_alphatest->setClosestHitProgram(0, hit);
+
+	auto mat_foliage = ctx->createMaterial();
+	mat_foliage->setAnyHitProgram(0, anyhit_tree);
+	mat_foliage->setClosestHitProgram(0, hit);
+
+	auto scene_accell = ctx->createAcceleration(m_builder); // No need to set acceleration properties on the top level Acceleration.
+	auto scene_root = ctx->createGroup();                   // The scene's root group nodes becomes the sysTopObject.
+	scene_root->setAcceleration(scene_accell);
+	ctx["sysTopObject"]->set(scene_root); // This is where the rtTrace calls start the BVH traversal. (Same for radiance and shadow rays.)
+
+	optix::Geometry plane_geometry = create_plane(ctx, bb, intersection);
+	optix::GeometryInstance plane_instance = ctx->createGeometryInstance(); // This connects Geometries with Materials.
+	plane_instance->setGeometry(plane_geometry);
+	plane_instance->setMaterialCount(1);
+	plane_instance->setMaterial(0, mat_opaque);
+	plane_instance["parMaterialAlbedo"]->setFloat(0.2f);
+	optix::Acceleration plane_accel = ctx->createAcceleration(m_builder);
+	set_acceleration_properties(plane_accel);
+	// This connects GeometryInstances with Acceleration structures. (All OptiX nodes with "Group" in the name hold an Acceleration.)
+	optix::GeometryGroup plane_group = ctx->createGeometryGroup();
+	plane_group->setAcceleration(plane_accel);
+	plane_group->setChildCount(1);
+	plane_group->setChild(0, plane_instance);
+
+	// The original object coordinates of the plane have unit size, from -1.0f to 1.0f in x-axis and z-axis.
+	// Scale the plane to go from -5 to 5.
+	float plane_matrix_data[16] = {
+		5.0f, 0.0f, 0.0f, 0.0f,
+		0.0f, 5.0f, 0.0f, 0.0f,
+		0.0f, 0.0f, 5.0f, 0.0f,
+		0.0f, 0.0f, 0.0f, 1.0f
+	};
+	optix::Matrix4x4 plane_matrix(plane_matrix_data);
+	optix::Transform plane_transform = ctx->createTransform();
+	plane_transform->setChild(plane_group);
+	plane_transform->setMatrix(false, plane_matrix.getData(), plane_matrix.inverse().getData());
+
+	// Add the transform node placeing the plane to the scene's root Group node.
+	auto children_added = 0U;
+	scene_root->setChildCount(uint32_t(blockers.size()) + 1U);
+	scene_root->setChild(children_added++, plane_transform);
+	// m_rootGroup->setChildCount(blockers.size());
+
+	for (auto m : blockers)
+	{
+		optix::Acceleration mesh_accel = ctx->createAcceleration(m_builder);
+		set_acceleration_properties(mesh_accel);
+
+		optix::GeometryInstance mesh_instance = ctx->createGeometryInstance(); // This connects Geometries with Materials.
+		mesh_instance->setGeometry(ao_optix_geometry(ctx, m, bb, intersection));
+		mesh_instance->setMaterialCount(1);
+
+		if (m->material && m->material->texture && m->material->texture->data)
+		{
+			const auto is_foliage = utils::starts_with(m->material->shader, "ksTree");
+			mesh_instance->setMaterial(0, is_foliage ? mat_foliage : mat_alphatest);
+			mesh_instance["parMaterialTexture"]->setTextureSampler(textures_loader.load_texture(*m->material->texture));
+
+			const auto var = m->material->get_var_or_null("ksAlphaRef");
+			mesh_instance["parMaterialAlphaRef"]->setFloat((var ? var->v1 : 0.5f) * 255.f);
+
+			if (is_foliage)
+			{
+				mesh_instance["parMaterialPassChange"]->setFloat(trees_light_pass_chance);
+			}
+
+			//std::cout << (is_foliage ? "Foliage: " : "Alpha-test: ") << m->name << ", material: " << m->material->name << ", shader: " << m->material->shader
+			//	<< ", alpha ref.: " << (var ? var->v1 : 0.5f) << "\n";
+		}
+		else
+		{
+			mesh_instance->setMaterial(0, mat_opaque);
+		}
+		mesh_instance["parMaterialAlbedo"]->setFloat(albedo);
+
+		optix::GeometryGroup mesh_group = ctx->createGeometryGroup();
+		// This connects GeometryInstances with Acceleration structures. (All OptiX nodes with "Group" in the name hold an Acceleration.)
+		mesh_group->setAcceleration(mesh_accel);
+		mesh_group->setChildCount(1);
+		mesh_group->setChild(0, mesh_instance);
+
+		optix::Matrix4x4 mesh_transform(m->matrix.data());
+		optix::Transform mesh_parent = ctx->createTransform();
+		mesh_parent->setChild(mesh_group);
+		mesh_parent->setMatrix(false, mesh_transform.getData(), mesh_transform.inverse().getData());
+		scene_root->setChild(children_added++, mesh_parent);
+	}
+
 	const auto sqrt_rays_per_sample = static_cast<int>(lroundf(sqrtf(static_cast<float>(rays_per_sample))));
 	unsigned seed = 0;
 
 	// Split sample points into batches
 	const size_t batch_size = 2000000; // Note: fits on GTX 750 (1 GB) along with Hunter model
 	const auto num_batches = std::max(idiv_ceil(ao_samples.num_samples, batch_size), size_t(1));
-	const auto scene_scale = std::max(std::max(bbox_max[0] - bbox_min[0], bbox_max[1] - bbox_min[1]), bbox_max[2] - bbox_min[2]);
 
 	cout_progress progress{num_batches * sqrt_rays_per_sample * sqrt_rays_per_sample};
 	progress.report();
+
+	ctx->setRayGenerationProgram(0, load_program(ctx, "raygeneration", ptx_program_raygeneration()));
+	ctx->setMissProgram(0, load_program(ctx, "raymiss", ptx_program_raymiss()));
 
 	for (size_t batch_idx = 0; batch_idx < num_batches; batch_idx++, seed++)
 	{
@@ -183,59 +288,74 @@ void bake::ao_optix_prime(
 		const auto num_samples = std::min(batch_size, ao_samples.num_samples - sample_offset);
 		if (num_samples == 0) continue;
 
-		// Copy all necessary data to device
-		const auto buffer_type = use_cuda ? RTP_BUFFER_TYPE_CUDA_LINEAR : RTP_BUFFER_TYPE_HOST;
-		const auto copy_type = use_cuda ? cudaMemcpyHostToDevice : cudaMemcpyHostToHost;
-		Buffer<float3> sample_normals(num_samples, buffer_type);
-		Buffer<float3> sample_face_normals(num_samples, buffer_type);
-		Buffer<float3> sample_positions(num_samples, buffer_type);
+		optix::Buffer buffer_normals = ctx->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT3);
+		{
+			// inNormalsBuffer->setElementSize(sizeof(float3));
+			buffer_normals->setSize(num_samples);
+			void* dst = buffer_normals->map(0, RT_BUFFER_MAP_WRITE_DISCARD);
+			memcpy(dst, &ao_samples.sample_normals[3 * sample_offset], sizeof(float3) * num_samples);
+			buffer_normals->unmap();
+			ctx["inNormalsBuffer"]->setBuffer(buffer_normals);
+		}
 
-		cudaMemcpy(sample_normals.ptr(), ao_samples.sample_normals + 3 * sample_offset, sample_normals.size_in_bytes(), copy_type);
-		cudaMemcpy(sample_face_normals.ptr(), ao_samples.sample_face_normals + 3 * sample_offset, sample_face_normals.size_in_bytes(), copy_type);
-		cudaMemcpy(sample_positions.ptr(), ao_samples.sample_positions + 3 * sample_offset, sample_positions.size_in_bytes(), copy_type);
-		AOSamples ao_samples_device{};
-		ao_samples_device.num_samples = num_samples;
-		ao_samples_device.sample_normals = reinterpret_cast<float*>(sample_normals.ptr());
-		ao_samples_device.sample_face_normals = reinterpret_cast<float*>(sample_face_normals.ptr());
-		ao_samples_device.sample_positions = reinterpret_cast<float*>(sample_positions.ptr());
-		ao_samples_device.sample_infos = nullptr;
+		optix::Buffer buffer_face_normals = ctx->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT3);
+		{
+			// inFaceNormalsBuffer->setElementSize(sizeof(float3));
+			buffer_face_normals->setSize(num_samples);
+			void* dst = buffer_face_normals->map(0, RT_BUFFER_MAP_WRITE_DISCARD);
+			memcpy(dst, &ao_samples.sample_face_normals[3 * sample_offset], sizeof(float3) * num_samples);
+			buffer_face_normals->unmap();
+			ctx["inFaceNormalsBuffer"]->setBuffer(buffer_face_normals);
+		}
 
-		Buffer<float> hits(num_samples, buffer_type);
-		Buffer<Ray> rays(num_samples, buffer_type);
-		Buffer<float> ao(num_samples, buffer_type);
-		cudaMemset(ao.ptr(), 0, ao.size_in_bytes());
+		optix::Buffer buffer_positions = ctx->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT3);
+		{
+			// inPositionsBuffer->setElementSize(sizeof(float3));
+			buffer_positions->setSize(num_samples);
+			void* dst = buffer_positions->map(0, RT_BUFFER_MAP_WRITE_DISCARD);
+			memcpy(dst, &ao_samples.sample_positions[3 * sample_offset], sizeof(float3) * num_samples);
+			buffer_positions->unmap();
+			ctx["inPositionsBuffer"]->setBuffer(buffer_positions);
+		}
 
-		query->setRays(rays.count(), Ray::format, rays.type(), rays.ptr());
-		query->setHits(hits.count(), RTP_BUFFER_FORMAT_HIT_T, hits.type(), hits.ptr());
+		ctx["numSamples"]->setUint(uint32_t(num_samples));
+		ctx["bounceCounts"]->setUint(bounce_counts);
+		ctx["sceneOffsetHorizontal"]->setFloat(scene_offset_scale_horizontal);
+		ctx["sceneOffsetVertical"]->setFloat(scene_offset_scale_vertical);
+		ctx["baseSeed"]->setUint(seed);
+		ctx["sqrtPasses"]->setInt(sqrt_rays_per_sample);
+
+		auto m_bufferOutput = ctx->createBuffer(RT_BUFFER_INPUT_OUTPUT);
+		m_bufferOutput->setFormat(RT_FORMAT_FLOAT);
+		m_bufferOutput->setSize(num_samples, 1);
+		ctx["sysOutputBuffer"]->set(m_bufferOutput);
 
 		for (auto i = 0; i < sqrt_rays_per_sample; ++i)
 			for (auto j = 0; j < sqrt_rays_per_sample; ++j)
 			{
-				generate_rays(use_cuda, seed, i, j, sqrt_rays_per_sample, scene_offset_scale, ao_samples_device, rays);
-				query->execute(0);
-				update_ao(use_cuda, num_samples, scene_maxdistance_scale * scene_scale, hits, ao);
+				// auto i2 = int(float(sqrt_rays_per_sample) * powf(float(i) / float(sqrt_rays_per_sample), 0.4f));
+				// generate_rays(use_cuda, seed, i, j, sqrt_rays_per_sample, scene_offset_scale, ao_samples_device, rays);
+
+				ctx["px"]->setInt(i);
+				ctx["py"]->setInt(j);
+				ctx->launch(0, num_samples, 1);
+
+				// update_ao(use_cuda, num_samples, scene_maxdistance_scale * scene_scale, hits, ao);
+				// update_ao(use_cuda, num_samples, 1.f, hits, ao);
 				progress.report();
 			}
 
-		// Copy AO to ao_values
-		cudaMemcpy(&ao_values[sample_offset], ao.ptr(), ao.size_in_bytes(), use_cuda ? cudaMemcpyDeviceToHost : cudaMemcpyHostToHost);
+		void* dst = m_bufferOutput->map(0, RT_BUFFER_MAP_READ);
+		memcpy(&ao_values[sample_offset], dst, sizeof(float) * num_samples);
+		m_bufferOutput->unmap();
 	}
 
 	// Normalize
 	for (size_t i = 0; i < ao_samples.num_samples; ++i)
 	{
-		ao_values[i] = 1.0f - ao_values[i] / float(rays_per_sample);
+		ao_values[i] = ao_values[i] / float(rays_per_sample);
+		// ao_values[i] = optix::clamp((1.0f - ao_values[i] / float(rays_per_sample)) * 1.2f, 0.f, 1.f);
 	}
 
-	// Clean up Buffer pointers. Could be avoided with unique_ptr.
-	for (auto& allocated_vertex_buffer : allocated_vertex_buffers)
-	{
-		delete allocated_vertex_buffer;
-	}
-	allocated_vertex_buffers.clear();
-	for (auto& allocated_index_buffer : allocated_index_buffers)
-	{
-		delete allocated_index_buffer;
-	}
-	allocated_index_buffers.clear();
+	ctx->destroy();
 }

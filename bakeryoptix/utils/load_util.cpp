@@ -8,6 +8,8 @@
 #include <utils/binary_reader.h>
 #include <utils/ini_file.h>
 #include <iomanip>
+#include <map>
+#include <dds/dds_loader.h>
 #include <utils/std_ext.h>
 
 // #pragma optimize("", off)
@@ -17,6 +19,25 @@ using namespace optix;
 struct load_data
 {
 	std::vector<std::shared_ptr<bake::Material>> materials;
+	std::map<std::string, std::string> textures;
+	std::map<std::string, std::shared_ptr<dds_loader>> loaded_textures;
+
+	std::shared_ptr<dds_loader> get_texture(const std::string& name)
+	{
+		const auto lf = loaded_textures.find(name);
+		if (lf != loaded_textures.end()) 
+		{
+			return lf->second;
+		}
+
+		const auto tf = textures.find(name);
+		if (tf == textures.end())
+		{
+			return loaded_textures[name] = std::make_shared<dds_loader>();
+		}
+
+		return loaded_textures[name] = std::make_shared<dds_loader>(tf->second.c_str(), tf->second.size());
+	}
 };
 
 static std::shared_ptr<bake::HierarchyNode> load_knh__read_node(utils::binary_reader& reader)
@@ -42,11 +63,9 @@ std::shared_ptr<bake::HierarchyNode> load_hierarchy(const utils::path& filename)
 static std::shared_ptr<bake::Mesh> load_kn5__read_mesh(load_data& target, const load_params& params, utils::binary_reader& reader)
 {
 	auto mesh = std::make_shared<bake::Mesh>();
-
-	const auto cast_shadows = reader.read_bool();
-	const auto is_visible = reader.read_bool();
-	const auto is_transparent = reader.read_bool();
-	mesh->cast_shadows = cast_shadows && !is_transparent;
+	mesh->cast_shadows = reader.read_bool();
+	mesh->is_visible = reader.read_bool();
+	mesh->is_transparent = reader.read_bool();
 
 	const auto vertices = reader.read_uint();
 	mesh->vertices.resize(vertices);
@@ -56,9 +75,10 @@ static std::shared_ptr<bake::Mesh> load_kn5__read_mesh(load_data& target, const 
 	{
 		const auto pos = reader.read_ref<bake::Vec3>();
 		auto normal = reader.read_ref<bake::Vec3>();
-		reader.skip(sizeof(float2) + sizeof(float3));
+		const auto tex = reader.read_ref<bake::Vec2>();
+		reader.skip(sizeof(float3));
 		normal.y += params.normals_bias;
-		mesh->vertices[i] = pos;
+		mesh->vertices[i] = {pos, tex};
 		*(float3*)&mesh->normals[i] = normalize(*(float3*)&normal);
 	}
 
@@ -68,31 +88,29 @@ static std::shared_ptr<bake::Mesh> load_kn5__read_mesh(load_data& target, const 
 	{
 		t = {reader.read_ushort(), reader.read_ushort(), reader.read_ushort()};
 	}
-
+	
 	const auto material = target.materials[reader.read_uint()];
-	const auto layer = reader.read_uint();
+	mesh->layer = reader.read_int();
 	mesh->lod_in = reader.read_float();
 	mesh->lod_out = reader.read_float();
 	reader.skip(sizeof(float3) + 4);
 
-	if (params.exclude_blockers_alpha_test && (material->alpha_tested || material->blend == bake::MaterialBlendMode::coverage)
-		|| material->blend == bake::MaterialBlendMode::blend)
+	if (params.exclude_blockers_alpha_test && (material->alpha_tested || material->blend == bake::MaterialBlendMode::coverage))
 	{
 		mesh->cast_shadows = false;
 	}
 
 	mesh->receive_shadows = true;
-	mesh->visible = is_visible;
 	mesh->material = material;
-	mesh->signature_point = mesh->vertices[0];
+	mesh->signature_point = mesh->vertices[0].pos;
 
 	if (mesh->lod_in > 0.f)
 	{
 		mesh->cast_shadows = false;
 	}
 
-	const auto is_renderable = reader.read_bool();
-	if (!is_renderable)
+	mesh->is_renderable = reader.read_bool();
+	if (!mesh->is_renderable)
 	{
 		mesh->receive_shadows = false;
 		mesh->cast_shadows = false;
@@ -104,11 +122,9 @@ static std::shared_ptr<bake::Mesh> load_kn5__read_mesh(load_data& target, const 
 static std::shared_ptr<bake::Mesh> load_kn5__read_skinned_mesh(load_data& target, const load_params& params, utils::binary_reader& reader)
 {
 	auto mesh = std::make_shared<bake::SkinnedMesh>();
-
-	const auto cast_shadows = reader.read_bool();
-	const auto is_visible = reader.read_bool();
-	const auto is_transparent = reader.read_bool();
-	mesh->cast_shadows = cast_shadows && !is_transparent;
+	mesh->cast_shadows = reader.read_bool();
+	mesh->is_visible = reader.read_bool();
+	mesh->is_transparent = reader.read_bool();
 
 	mesh->bones.resize(reader.read_uint());
 	for (auto& b : mesh->bones)
@@ -126,11 +142,12 @@ static std::shared_ptr<bake::Mesh> load_kn5__read_skinned_mesh(load_data& target
 	{
 		const auto pos = reader.read_ref<bake::Vec3>();
 		auto normal = reader.read_ref<bake::Vec3>();
-		reader.skip(sizeof(float2) + sizeof(float3));
+		const auto tex = reader.read_ref<bake::Vec2>();
+		reader.skip(sizeof(float3));
 		const auto weights = reader.read_ref<bake::Vec4>();
 		const auto bone_ids = reader.read_ref<bake::Vec4>();
 		normal.y += params.normals_bias;
-		mesh->vertices[i] = pos;
+		mesh->vertices[i] = {pos, tex};
 		*(float3*)&mesh->normals[i] = normalize(*(float3*)&normal);
 		mesh->weights[i] = weights;
 		mesh->bone_ids[i] = bone_ids;
@@ -144,20 +161,18 @@ static std::shared_ptr<bake::Mesh> load_kn5__read_skinned_mesh(load_data& target
 	}
 
 	const auto material = target.materials[reader.read_uint()];
-	const auto layer = reader.read_uint();
+	mesh->layer = reader.read_int();
 	mesh->lod_in = reader.read_float();
 	mesh->lod_out = reader.read_float();
 
-	if (params.exclude_blockers_alpha_test && (material->alpha_tested || material->blend == bake::MaterialBlendMode::coverage)
-		|| material->blend == bake::MaterialBlendMode::blend)
+	if (params.exclude_blockers_alpha_test && (material->alpha_tested || material->blend == bake::MaterialBlendMode::coverage))
 	{
 		mesh->cast_shadows = false;
 	}
 
 	mesh->receive_shadows = true;
-	mesh->visible = is_visible;
 	mesh->material = material;
-	mesh->signature_point = mesh->vertices[0];
+	mesh->signature_point = mesh->vertices[0].pos;
 
 	if (mesh->lod_in > 0.f)
 	{
@@ -243,6 +258,14 @@ static std::shared_ptr<bake::NodeBase> load_kn5__read_node(load_data& target, co
 	}
 }
 
+inline bool uses_alpha_from_normal(const std::string& shader_name)
+{
+	return shader_name == "ksPerPixelNM"
+		|| shader_name == "ksPerPixelMultiMap_AT"
+		|| shader_name == "ksPerPixelMultiMap_AT_NMDetail"
+		|| shader_name == "nePerPixelNM_heating";
+}
+
 std::shared_ptr<bake::NodeBase> load_kn5_file(const utils::path& filename, const load_params& params)
 {
 	if (!exists(filename)) return nullptr;
@@ -254,16 +277,19 @@ std::shared_ptr<bake::NodeBase> load_kn5_file(const utils::path& filename, const
 	if (version == 6) reader.read_uint();
 	if (version > 6) return nullptr;
 
+	load_data target{};
 	for (auto i = reader.read_uint(); i > 0; i--)
 	{
 		if (reader.read_uint() == 0) continue;
 		auto name = reader.read_string(); // name
 		const auto size = reader.read_uint();
 		// std::cout << "texture: " << name << ", size: " << size << "\n";
-		reader.skip(size); // length+data
+		// reader.skip(size); // length+data
+
+		target.textures[name] = reader.read_data(size);
+		// dds_loader::load_data(data.c_str(), data.size());
 	}
 
-	load_data target{};
 	for (auto i = reader.read_uint(); i > 0; i--)
 	{
 		auto mat = std::make_shared<bake::Material>();
@@ -291,9 +317,18 @@ std::shared_ptr<bake::NodeBase> load_kn5_file(const utils::path& filename, const
 			mat->resources.push_back(res);
 		}
 
-		target.materials.push_back(mat);
+		if (mat->alpha_tested || mat->blend == bake::MaterialBlendMode::coverage || mat->blend == bake::MaterialBlendMode::blend)
+		{
+			if (const auto tx = mat->get_resource_or_null(uses_alpha_from_normal(mat->shader) ? "txNormal" : "txDiffuse"))
+			{
+				mat->texture = target.get_texture(tx->texture);
+			}
+		}
+
+		target.materials.push_back(std::move(mat));
 	}
 
+	target.textures.clear();
 	return load_kn5__read_node(target, params, reader);
 }
 

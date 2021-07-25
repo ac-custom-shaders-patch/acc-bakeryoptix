@@ -36,15 +36,19 @@ rtDeclareVariable(rtObject, sysTopObject, , );
 
 // Semantic variables.
 rtDeclareVariable(optix::Ray, theRay, rtCurrentRay, );
-
+rtDeclareVariable(float, theIntersectionDistance, rtIntersectionDistance, );
 rtDeclareVariable(PerRayData, thePrd, rtPayload, );
 
 // Attributes.
 rtDeclareVariable(optix::float3, varGeoNormal, attribute GEO_NORMAL, );
 //rtDeclareVariable(optix::float3, varTangent,   attribute TANGENT, );
-rtDeclareVariable(optix::float3, varNormal,    attribute NORMAL, );
-//rtDeclareVariable(optix::float3, varTexCoord,  attribute TEXCOORD, ); 
+rtDeclareVariable(optix::float3, varNormal, attribute NORMAL, );
+rtDeclareVariable(optix::float3, varTexCoord, attribute TEXCOORD, );
 
+// Material parameter definition.
+rtDeclareVariable(float, parMaterialAlbedo, , ); // Per Material index into the sysMaterialParameters array.
+rtDeclareVariable(int, parMaterialTexture, , );  // Per Material index into the sysMaterialParameters array.
+// 
 // This closest hit program only uses the geometric normal and the shading normal attributes.
 // OptiX will remove all code from the intersection programs for unused attributes automatically.
 
@@ -53,26 +57,81 @@ rtDeclareVariable(optix::float3, varNormal,    attribute NORMAL, );
 // the user defined attribute semantic (e.g. here NORMAL). 
 // The actual variable name doesn't need to match but it's recommended for clarity.
 
+RT_FUNCTION void alignVector(float3 const& axis, float3& w)
+{
+	// Align w with axis.
+	const float s = copysign(1.0f, axis.z);
+	w.z *= s;
+	const float3 h = make_float3(axis.x, axis.y, axis.z + s);
+	const float k = optix::dot(w, h) / (1.0f + fabsf(axis.z));
+	w = k * h - w;
+}
+
+RT_FUNCTION void unitSquareToCosineHemisphere(const float2 sample, float3 const& axis, float3& w, float& pdf)
+{
+	// Choose a point on the local hemisphere coordinates about +z.
+	const float theta = 2.0f * M_PIf * sample.x;
+	const float r = sqrtf(sample.y);
+	w.x = r * cosf(theta);
+	w.y = r * sinf(theta);
+	w.z = 1.0f - w.x * w.x - w.y * w.y;
+	w.z = (0.0f < w.z) ? sqrtf(w.z) : 0.0f;
+
+	pdf = w.z * M_1_PIf;
+
+	// Align with axis.
+	alignVector(axis, w);
+}
+
 RT_PROGRAM void rayhit()
 {
-  // Transform the (unnormalized) object space normals into world space.
-  float3 geoNormal = optix::normalize(rtTransformNormal(RT_OBJECT_TO_WORLD, varGeoNormal));
-  float3 normal    = optix::normalize(rtTransformNormal(RT_OBJECT_TO_WORLD, varNormal));
+	// Transform the (unnormalized) object space normals into world space.
+	float3 geoNormal = optix::normalize(rtTransformNormal(RT_OBJECT_TO_WORLD, varGeoNormal));
+	float3 normal = optix::normalize(rtTransformNormal(RT_OBJECT_TO_WORLD, varNormal));
 
-  // Check if the ray hit the geometry on the frontface or the backface.
-  // The geometric normal is always defined on the front face of the geometry.
-  // In this implementation the coordinate systems are right-handed and the frontface triangle winding is counter-clockwise (matching OpenGL).
+	thePrd.pos = theRay.origin + theRay.direction * theIntersectionDistance; // Advance the path to the hit position in world coordinates.
 
-  // If theRay.direction and geometric normal are in the same hemisphere we're looking at a backface.
-  if (0.0f < optix::dot(theRay.direction, geoNormal))
-  {
-    // Flip the shading normal to the backface, because only that is used below.
-    // (See later examples for more intricate handling of the frontface condition.)
-    normal = -normal;
-  }
+	// Explicitly include edge-on cases as frontface condition! (Important for nested materials shown in a later example.)
+	thePrd.flags |= (0.0f <= optix::dot(thePrd.wo, geoNormal)) ? FLAG_FRONTFACE : 0;
 
-  // Visualize the resulting world space normal on the surface we're looking on.
-  // Transform the normal components from [-1.0f, 1.0f] to the range [0.0f, 1.0f] to get colors for negative values.
-  // thePrd.radiance = normal * 0.5f + 0.5f;
-  thePrd.radiance = make_float3(0.f, 0.f, 0.f);
+	if ((thePrd.flags & FLAG_FRONTFACE) == 0) // Looking at the backface?
+	{
+		// Means geometric normal and shading normal are always defined on the side currently looked at.
+		// This gives the backfaces of opaque BSDFs a defined result.
+		geoNormal = -geoNormal;
+		normal = -normal;
+		// Do not recalculate the frontface condition!
+	}
+
+	// A material system with support for arbitrary mesh lights would evaluate its emission here.
+	thePrd.radiance = make_float3(0.0f);
+
+	// Start fresh with the next BSDF sample.  (Either of these values remaining zero is an end-of-path condition.)
+	thePrd.f_over_pdf = make_float3(0.0f);
+	thePrd.pdf = 0.0f;
+
+	// Lambert sampling: Cosine weighted hemisphere sampling above the shading normal.
+	// This calculates the ray.direction for the next path segment in wi and its probability density function value in pdf.
+	unitSquareToCosineHemisphere(rng2(thePrd.seed), normal, thePrd.wi, thePrd.pdf);
+
+	// Do not sample opaque surfaces below the geometry!
+	// Mind that the geometry normal has been flipped to the side the ray points at.
+	if (thePrd.pdf <= 0.0f || optix::dot(thePrd.wi, geoNormal) <= 0.0f)
+	{
+		thePrd.flags |= FLAG_TERMINATE;
+		return;
+	}
+
+	// MaterialParameter parameters = sysMaterialParameters[parMaterialIndex];
+
+	// This would be the universal implementation for an arbitrary sampling of a diffuse surface.
+	// thePrd.f_over_pdf = parameters.albedo * (M_1_PIf * fabsf(optix::dot(prd.wi, normal)) / prd.pdf); 
+
+	// PERF Since the cosine-weighted hemisphere distribution is a perfect importance-sampling of the Lambert material,
+	// the whole term ((M_1_PIf * fabsf(optix::dot(prd.wi, normal)) / prd.pdf) is always 1.0f here!
+	thePrd.f_over_pdf = make_float3(parMaterialAlbedo, parMaterialAlbedo, parMaterialAlbedo);
+
+	// This is a brute-force path tracer. There is no next event estimation (direct lighting) here.
+	// Note that because of that, the albedo affects the path throughput only.
+	// This material is not returning any radiance because it's not a light source.
 }

@@ -28,22 +28,31 @@
 
 #include "ray.h"
 
-rtBuffer<float, 2> sysOutputBuffer; // RGBA32F
-rtDeclareVariable(uint2, theLaunchIndex, rtLaunchIndex, );
+#include <optix.h>
+#include <optixu/optixu_math_namespace.h>
 
-RT_PROGRAM void rayexception()
+// Attributes.
+rtDeclareVariable(optix::float3, varGeoNormal, attribute GEO_NORMAL, );
+//rtDeclareVariable(optix::float3, varTangent,   attribute TANGENT, );
+rtDeclareVariable(optix::float3, varNormal, attribute NORMAL, );
+rtDeclareVariable(optix::float3, varTexCoord, attribute TEXCOORD, );
+
+// Material parameter definition.
+rtDeclareVariable(float, parMaterialAlphaRef, , ); // Per Material index into the sysMaterialParameters array.
+rtDeclareVariable(float, parMaterialPassChange, , ); // Per Material index into the sysMaterialParameters array.
+// rtDeclareVariable(int, parMaterialTexture, , ); // Per Material index into the sysMaterialParameters array.
+rtTextureSampler<uchar4, 2> parMaterialTexture;
+
+RT_FUNCTION float frac(float v)
 {
-	#if USE_DEBUG_EXCEPTIONS
-	const unsigned int code = rtGetExceptionCode();
-	if (RT_EXCEPTION_USER <= code) 
-	{
-		rtPrintf("User exception %d at (%d, %d)\n", code - RT_EXCEPTION_USER, theLaunchIndex.x, theLaunchIndex.y);
-	}
-	else 
-	{
-		rtPrintf("Exception code 0x%X at (%d, %d)\n", code, theLaunchIndex.x, theLaunchIndex.y);
-	}
+	return v - floorf(v);
+}
 
-	sysOutputBuffer[theLaunchIndex] = 0.f;
-	#endif
+RT_PROGRAM void rayanyhit_tree()
+{
+	if (tex2D(parMaterialTexture, varTexCoord.x, varTexCoord.y).w <= parMaterialAlphaRef
+		&& frac(varTexCoord.x * 697.4581 + varTexCoord.y * 246.5266) < parMaterialPassChange)
+	{
+		rtIgnoreIntersection();
+	}
 }

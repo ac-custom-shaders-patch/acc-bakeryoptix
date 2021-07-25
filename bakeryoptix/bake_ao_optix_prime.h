@@ -30,14 +30,6 @@
 
 namespace bake
 {
-	void ao_optix_prime(
-		const std::vector<Mesh*>& blockers,
-		const AOSamples& ao_samples,
-		const int rays_per_sample,
-		const float scene_offset_scale,
-		const float scene_maxdistance_scale,
-		const float* bbox_min,
-		const float* bbox_max,
-		float* ao_values,
-		bool use_cuda);
+	void ao_optix_prime(const std::vector<Mesh*>& blockers, const AOSamples& ao_samples, int rays_per_sample, float albedo, uint32_t bounce_counts,
+		float scene_offset_scale_horizontal, float scene_offset_scale_vertical, const float trees_light_pass_chance, float* ao_values);
 }

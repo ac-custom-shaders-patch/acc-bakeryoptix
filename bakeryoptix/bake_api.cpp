@@ -57,7 +57,7 @@ float3 transform_pos(const float3& pos, const Matrix4x4& mat)
 	f4.w = 1.f;
 	*(float3*)&f4 = pos;
 	const auto w = f4 * mat;
-	return *(float3*)&w;
+	return *(const float3*)&w;
 }
 
 float3 transform_dir(const float3& pos, const Matrix4x4& mat)
@@ -66,7 +66,7 @@ float3 transform_dir(const float3& pos, const Matrix4x4& mat)
 	f4.w = 0.f;
 	*(float3*)&f4 = pos;
 	const auto w = f4 * mat;
-	return *(float3*)&w;
+	return *(const float3*)&w;
 }
 
 Vec3 transform_pos(const Vec3& pos, const Matrix4x4& mat)
@@ -75,7 +75,7 @@ Vec3 transform_pos(const Vec3& pos, const Matrix4x4& mat)
 	f4.w = 1.f;
 	*(Vec3*)&f4 = pos;
 	const auto w = f4 * mat;
-	return *(Vec3*)&w;
+	return *(const Vec3*)&w;
 }
 
 Vec3 transform_dir(const Vec3& pos, const Matrix4x4& mat)
@@ -84,7 +84,7 @@ Vec3 transform_dir(const Vec3& pos, const Matrix4x4& mat)
 	f4.w = 0.f;
 	*(Vec3*)&f4 = pos;
 	const auto w = f4 * mat;
-	return *(Vec3*)&w;
+	return *(const Vec3*)&w;
 }
 
 NodeTransformation NodeTransformation::operator*(const NodeTransformation& b) const
@@ -139,6 +139,10 @@ static bool test_mesh_property(const Mesh* mesh, const std::string& query, bool&
 					if (std_ext::match(query.substr(sep + 1), t.texture)) return true;
 				}
 			}
+			if (p == "visible")
+			{
+				return (query.substr(sep + 1)[0] == 'y') == mesh->is_visible;
+			}
 			break;
 		}
 		case 8:
@@ -147,6 +151,24 @@ static bool test_mesh_property(const Mesh* mesh, const std::string& query, bool&
 			if (p == "material")
 			{
 				return mesh->material && std_ext::match(query.substr(sep + 1), mesh->material->name);
+			}
+			break;
+		}
+		case 10:
+		{
+			const auto p = query.substr(0, sep);
+			if (p == "renderable")
+			{
+				return (query.substr(sep + 1)[0] == 'y') == mesh->is_renderable;
+			}
+			break;
+		}
+		case 11:
+		{
+			const auto p = query.substr(0, sep);
+			if (p == "transparent")
+			{
+				return (query.substr(sep + 1)[0] == 'y') == mesh->is_transparent;
 			}
 			break;
 		}
@@ -186,7 +208,7 @@ Vec3 skinned_pos(const Vec3& pos, const Vec4& weight, const Vec4& bone_id, const
 	const auto& bone1 = bones[bone_id.y < 0 ? 0 : uint(bone_id.y)];
 	const auto& bone2 = bones[bone_id.z < 0 ? 0 : uint(bone_id.z)];
 	const auto& bone3 = bones[bone_id.w < 0 ? 0 : uint(bone_id.w)];
-	const auto& s = *(float3*)&pos;
+	const auto& s = *(const float3*)&pos;
 	auto p = weight.x * transform_pos(s, bone0);
 	p += weight.y * transform_pos(s, bone1);
 	p += weight.z * transform_pos(s, bone2);
@@ -238,7 +260,7 @@ void SkinnedMesh::resolve(const Node* node)
 
 	for (auto i = 0U; i < vertices.size(); i++)
 	{
-		vertices[i] = skinned_pos(vertices_orig[i], weights[i], bone_ids[i], bones_, node);
+		vertices[i].pos = skinned_pos(vertices_orig[i].pos, weights[i], bone_ids[i], bones_, node);
 	}
 
 	matrix = NodeTransformation::identity();
@@ -487,7 +509,7 @@ bool NodeTransition::apply(float progress) const
 	}
 	else
 	{
-		const auto mix = clamp((float(frames.size()) - 1.f) * progress - frame_prev, 0.f, 1.f);
+		const auto mix = clamp((float(frames.size()) - 1.f) * progress - float(frame_prev), 0.f, 1.f);
 		node->matrix_local = lerp_tranformation(frames[frame_prev], frames[frame_next], mix);
 	}
 	return prev != node->matrix_local;
@@ -524,7 +546,7 @@ bool Animation::apply(const std::shared_ptr<Node>& root, float progress)
 bool Animation::apply_all(const std::shared_ptr<Node>& root, const std::vector<std::shared_ptr<bake::Animation>>& animations, float progress)
 {
 	auto ret = false;
-	for (auto a : animations)
+	for (const auto& a : animations)
 	{
 		if (a->apply(root, progress))
 		{
@@ -572,9 +594,9 @@ static void ensure_has_something(std::vector<std::shared_ptr<Mesh>>& blockers)
 	if (!blockers.empty()) return;
 
 	const auto m = std::make_shared<Mesh>();
-	m->vertices.push_back({0.f, 0.f, 0.f});
-	m->vertices.push_back({0.f, 0.f, 0.f});
-	m->vertices.push_back({0.f, 0.f, 0.f});
+	m->vertices.push_back({{0.f, 0.f, 0.f}, {0.f, 0.f}});
+	m->vertices.push_back({{0.f, 0.f, 0.f}, {0.f, 0.f}});
+	m->vertices.push_back({{0.f, 0.f, 0.f}, {0.f, 0.f}});
 	m->normals.push_back({0.f, 1.f, 0.f});
 	m->normals.push_back({0.f, 1.f, 0.f});
 	m->normals.push_back({0.f, 1.f, 0.f});
@@ -592,7 +614,7 @@ Scene::Scene(const std::vector<std::shared_ptr<Node>>& nodes)
 		n->resolve_skinned();
 		for (const auto& m : n->get_meshes())
 		{
-			if (!m->visible || !m->active) continue;
+			if (!m->is_visible || !m->active) continue;
 			if (m->receive_shadows) receivers.push_back(m);
 
 			const auto& x = to_matrix(m->matrix).transpose();
@@ -632,7 +654,7 @@ Scene::Scene(const std::vector<std::shared_ptr<Node>>& nodes)
 			
 			for (const auto& v : m->vertices)
 			{
-				const auto w = transform_pos(v, x);
+				const auto w = transform_pos(v.pos, x);
 				expand_bbox(bbox_min, bbox_max, &w.x);
 			}
 		}

@@ -259,7 +259,7 @@ namespace
 		sparse_matrix& regularization_matrix)
 	{
 		const int3* tri_vertex_indices = reinterpret_cast<const int3*>(&mesh->triangles[0]);
-		edge_based_regularizer(&mesh->vertices[0].x, mesh->vertices.size(), tri_vertex_indices, mesh->triangles.size(), regularization_matrix);
+		edge_based_regularizer(&mesh->vertices[0].pos.x, mesh->vertices.size(), tri_vertex_indices, mesh->triangles.size(), regularization_matrix);
 	}
 
 	void filter_mesh_least_squares(
