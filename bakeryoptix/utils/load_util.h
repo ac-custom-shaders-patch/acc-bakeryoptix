@@ -34,4 +34,5 @@ std::shared_ptr<bake::HierarchyNode> load_hierarchy(const utils::path& filename)
 std::shared_ptr<bake::Node> load_model(const utils::path& filename, const load_params& params);
 std::shared_ptr<bake::Animation> load_ksanim(const utils::path& filename, bool include_static = false);
 std::vector<bake::AILanePoint> load_ailane(const utils::path& filename);
+void replacement_optimization(const utils::path& filename);
 

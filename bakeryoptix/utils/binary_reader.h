@@ -20,6 +20,7 @@ namespace utils
 		void skip(uint32_t count);
 		void skip_string();
 		std::string read_string();
+		std::string read_rest();
 		std::string read_data(uint size);
 		bool match(const char* str);
 		char read_char();

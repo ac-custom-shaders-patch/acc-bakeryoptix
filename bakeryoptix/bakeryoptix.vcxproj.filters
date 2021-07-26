@@ -90,6 +90,9 @@
     <ClCompile Include="utils\xxhash\xxhash.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="utils\string_codecvt.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="bake_ao_optix_prime.h">

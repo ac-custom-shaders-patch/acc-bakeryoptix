@@ -15,8 +15,8 @@
 #define DBG_6(V, V1, V2, V3, V4, V5) #V "="<< (V) << DBG_OUT(V1) << DBG_OUT(V2) << DBG_OUT(V3) << DBG_OUT(V4) << DBG_OUT(V5)  
 #define DBG_7(V, V1, V2, V3, V4, V5, V6) #V "="<< (V) << DBG_OUT(V1) << DBG_OUT(V2) << DBG_OUT(V3) << DBG_OUT(V4) << DBG_OUT(V5) << DBG_OUT(V6)  
 #define OUTPUT(...) __VA_ARGS__
-#define DBG(...) std::cout << "[" << __func__ << ":" << __LINE__ << "] " << OUTPUT(BOOST_PP_OVERLOAD(DBG_, __VA_ARGS__)(__VA_ARGS__)) << "\n";
-#define DBG_FN(...) std::cout << "[" << __func__ << ":" << __LINE__ << "] " << OUTPUT(BOOST_PP_OVERLOAD(DBG_, __VA_ARGS__)(__VA_ARGS__)) << "\n";
+#define DBG(...) std::cout << "[" << __func__ << ":" << __LINE__ << "] " << OUTPUT(BOOST_PP_OVERLOAD(DBG_, __VA_ARGS__)(__VA_ARGS__)) << std::endl;
+#define DBG_FN(...) std::cout << "[" << __func__ << ":" << __LINE__ << "] " << OUTPUT(BOOST_PP_OVERLOAD(DBG_, __VA_ARGS__)(__VA_ARGS__)) << std::endl;
 
 // #define DEVELOPMENT_CFG
 #ifdef DEVELOPMENT_CFG

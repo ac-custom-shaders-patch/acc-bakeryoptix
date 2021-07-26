@@ -36,6 +36,7 @@
 #include <optixu/optixu_matrix_namespace.h>
 #include <cuda/random.h>
 #include <assert.h>
+#include <iostream>
 #include <utils/cout_progress.h>
 
 using namespace optix;
@@ -202,6 +203,13 @@ void sample_instance(
 	const TriangleSamplerCallback cb(unsigned(min_samples_per_triangle), &tri_areas[0]);
 	distribute_samples_generic(cb, ao_samples.num_samples, mesh->triangles.size(), &tri_sample_counts[0]);
 
+	// Calculating adjusted samples offset
+	auto samples_offset = mesh->extra_samples_offset;
+	if (mesh->lod_in != 0.f)
+	{
+		samples_offset += mesh->lod_in / 100.f;
+	}
+	
 	// Place samples
 	size_t sample_idx = 0;
 	for (size_t tri_idx = 0; tri_idx < mesh->triangles.size(); tri_idx++)
@@ -221,7 +229,8 @@ void sample_instance(
 			norms[2] = (float3*)&mesh->normals[tri.z];
 			normals = norms;
 		}
-		sample_triangle(xform, xform_invtrans, verts, normals, tri_idx, tri_sample_counts[tri_idx], tri_areas[tri_idx], seed, mesh->extra_samples_offset, missing_normals_up,
+		
+		sample_triangle(xform, xform_invtrans, verts, normals, tri_idx, tri_sample_counts[tri_idx], tri_areas[tri_idx], seed, samples_offset, missing_normals_up,
 			sample_positions + sample_idx, sample_norms + sample_idx, sample_face_norms + sample_idx, sample_infos + sample_idx, fix_incorrect_normals);
 		sample_idx += tri_sample_counts[tri_idx];
 	}

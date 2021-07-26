@@ -26,6 +26,7 @@
  */
 
 #define USE_TRYCATCH
+// #define REPLACEMENT_OPTIMIZATION_MODE
 
 #include <bake_api.h>
 #include <bake_wrap.h>
@@ -123,7 +124,7 @@ std::vector<T> to_vector(const std::set<T>& input)
 	return r;
 }
 
-void dump_obj(const utils::path& filename, const std::vector<std::shared_ptr<bake::Mesh>>& meshes)
+static void dump_obj(const utils::path& filename, const std::vector<std::shared_ptr<bake::Mesh>>& meshes)
 {
 	std::ofstream o(filename.string());
 	std::vector<int> start;
@@ -327,7 +328,7 @@ struct file_processor
 	};
 	std::vector<reduced_ground> reduced_ground_params;
 
-	file_processor(utils::path filename, bool is_cuda_available)
+	file_processor(utils::path filename)
 		: input_file(std::move(filename))
 	{
 		config = load_config(input_file);
@@ -1665,6 +1666,11 @@ struct file_processor
 		// Generating alternative AO with driver shadows
 		if (FEATURE_ACTIVE("DRIVER_CASTS_SHADOWS") && driver_root)
 		{
+			Animation::apply_all(driver_root, driver_animations, 0.f);
+			Animation::apply_all(driver_root, driver_steer_animations, 0.5f);
+			driver_root->update_matrix();
+			driver_root->resolve_skinned();
+
 			const auto driver_shadow_targets = root->find_nodes(resolve_filter({"@COCKPIT_HR", "@COCKPIT_LR"}));
 			const auto driver_shadow_blockers = std::make_shared<Scene>(root)->blockers + std::make_shared<Scene>(driver_root)->blockers;
 			const auto driver_shadow_targets_scene = std::make_shared<Scene>(driver_shadow_targets);
@@ -1785,7 +1791,6 @@ struct cuda_capabilities
 	}
 };
 
-
 static LONG CALLBACK unhandled_handler(EXCEPTION_POINTERS* e)
 {
 	utils::make_minidump(e);
@@ -1794,7 +1799,9 @@ static LONG CALLBACK unhandled_handler(EXCEPTION_POINTERS* e)
 
 int main(int argc, const char** argv)
 {
+	#ifndef REPLACEMENT_OPTIMIZATION_MODE
 	SetUnhandledExceptionFilter(unhandled_handler);
+	#endif
 
 	#ifdef USE_TRYCATCH
 	try
@@ -1802,6 +1809,15 @@ int main(int argc, const char** argv)
 		#endif
 		SetConsoleOutputCP(CP_UTF8);
 
+		#ifdef REPLACEMENT_OPTIMIZATION_MODE
+
+		for (auto i = 1; i < argc; i++)
+		{
+			replacement_optimization(argv[i]);
+		}
+		
+		#else
+		
 		bool is_cuda_available;
 		int cuda_version;
 		const auto cuda_result = cudaRuntimeGetVersion(&cuda_version);
@@ -1852,16 +1868,17 @@ int main(int argc, const char** argv)
 			ofn.Flags = OFN_DONTADDTORECENT | OFN_FILEMUSTEXIST;
 			if (GetOpenFileNameW(&ofn))
 			{
-				file_processor(utils::path(filename), is_cuda_available).run();
+				file_processor(utils::path(filename)).run();
 			}
 		}
 		else
 		{
 			for (auto i = 1; i < argc; i++)
 			{
-				file_processor(argv[i], is_cuda_available).run();
+				file_processor(argv[i]).run();
 			}
 		}
+		#endif
 
 		return 0;
 		#ifdef USE_TRYCATCH

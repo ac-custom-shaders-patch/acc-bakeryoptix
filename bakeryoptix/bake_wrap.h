@@ -13,6 +13,7 @@ struct bake_params {
 	bool disable_normals;
 	bool missing_normals_up;
 	bool fix_incorrect_normals;
+	bool debug_mode;
 
 	bool sample_on_points;
 	bake::Vec3 sample_offset;
@@ -35,6 +36,6 @@ struct bake_params {
 
 struct bake_wrap final
 {
-	static baked_data bake_scene(const std::shared_ptr<bake::Scene>& scene, std::vector<std::shared_ptr<bake::Mesh>> blockers, 
+	static baked_data bake_scene(const std::shared_ptr<bake::Scene>& scene, const std::vector<std::shared_ptr<bake::Mesh>>& blockers, 
 		const bake_params& config, bool verbose = false);
 };

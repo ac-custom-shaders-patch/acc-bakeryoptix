@@ -111,7 +111,7 @@ void destroy_ao_samples(bake::AOSamples& ao_samples)
 	ao_samples.num_samples = 0;
 }
 
-baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene, const std::vector<std::shared_ptr<bake::Mesh>> blockers,
+baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene, const std::vector<std::shared_ptr<bake::Mesh>>& blockers,
 	const bake_params& config, bool verbose)
 {
 	#undef PERF
@@ -205,7 +205,7 @@ baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene, cons
 		}
 
 		ao_optix_prime(blocker_meshes, ao_samples, config.num_rays, config.scene_albedo, uint32_t(config.bounce_counts),
-			config.scene_offset_scale_horizontal, config.scene_offset_scale_vertical, config.trees_light_pass_chance, &ao_values[0]);
+			config.scene_offset_scale_horizontal, config.scene_offset_scale_vertical, config.trees_light_pass_chance, config.debug_mode, &ao_values[0]);
 	}
 
 	// Mapping AO to vertices

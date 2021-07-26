@@ -43,6 +43,20 @@ namespace utils
 		return std::string(&buffer_[get_pos_and_move(length)], length);
 	}
 
+	std::string binary_reader::read_rest()
+	{
+		const auto p = size_t(long(stream_->tellg()) - long(left_));
+		stream_->seekg(0, std::ios::end);
+		const auto total = size_t(stream_->tellg());
+		std::string ret;
+		ret.resize(total - size_t(p));
+		
+		stream_->seekg(p, std::ios::beg);
+		stream_->read(&ret[0], ret.size());
+		left_ = 0;
+		return ret;
+	}
+
 	std::string binary_reader::read_data(uint size)
 	{
 		if (left_ >= size)

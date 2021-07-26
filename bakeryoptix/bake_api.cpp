@@ -240,27 +240,27 @@ void SkinnedMesh::resolve(const Node* node)
 		normals_orig = normals;
 	}
 
-	std::vector<Matrix4x4> bones_;
-	bones_.resize(bones.size());
+	std::vector<Matrix4x4> bone_transforms;
+	bone_transforms.resize(bones.size());
 
 	for (auto i = 0U; i < bones.size(); i++)
 	{
 		auto& b = bones[i];
-		b.node = node->find_node(Filter({b.name}));
+		b.node = node->find_node(b.name);
 		if (b.node)
 		{
-			bones_[i] = to_matrix(b.node->matrix * b.tranform).transpose();
+			bone_transforms[i] = to_matrix(b.node->matrix * b.tranform).transpose();
 		}
 		else
 		{
 			std::cerr << "Node for bone is missing: `" << b.name << "` (mesh: `" << name << "`)" << std::endl;
-			bones_[i] = to_matrix(b.tranform).transpose();
+			bone_transforms[i] = to_matrix(b.tranform).transpose();
 		}
 	}
 
 	for (auto i = 0U; i < vertices.size(); i++)
 	{
-		vertices[i].pos = skinned_pos(vertices_orig[i].pos, weights[i], bone_ids[i], bones_, node);
+		vertices[i].pos = skinned_pos(vertices_orig[i].pos, weights[i], bone_ids[i], bone_transforms, node);
 	}
 
 	matrix = NodeTransformation::identity();
@@ -425,6 +425,25 @@ void Node::add_child(const std::shared_ptr<NodeBase>& node)
 	if (!node) return;
 	children.push_back(node);
 	node->parent = this;
+}
+
+std::shared_ptr<Node> Node::find_node(const std::string& filter) const
+{
+	for (auto& c : children)
+	{
+		if (auto n = std::dynamic_pointer_cast<Node>(c))
+		{
+			if (n->name == filter)
+			{
+				return n;
+			}
+			if (auto r = n->find_node(filter))
+			{
+				return r;
+			}
+		}
+	}
+	return nullptr;
 }
 
 std::vector<std::shared_ptr<Mesh>> Node::get_meshes()

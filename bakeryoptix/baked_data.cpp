@@ -128,7 +128,7 @@ void baked_data::smooth_ao()
 	std::unordered_map<size_t, data> v;
 
 	const auto mult = 1.f / 0.005f;
-	const auto normal_contribution = 0.003f;
+	const auto normal_contribution = 0.01f;
 	
 	cout_progress progress_smooth{entries.size() * 2};
 	for (const auto& m : entries)

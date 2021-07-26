@@ -211,6 +211,7 @@
     <ClCompile Include="utils\miniz\minizpp.cpp" />
     <ClCompile Include="utils\cout_progress.cpp" />
     <ClCompile Include="utils\std_ext.cpp" />
+    <ClCompile Include="utils\string_codecvt.cpp" />
     <ClCompile Include="utils\string_operations.cpp" />
     <ClCompile Include="utils\variant.cpp" />
     <ClCompile Include="main.cpp" />

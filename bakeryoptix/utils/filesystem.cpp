@@ -41,11 +41,7 @@ namespace utils
 
 	path path::parent_path() const
 	{
-		const auto e0 = data_.find_last_of('/');
-		const auto e1 = data_.find_last_of('\\');
-		const auto e = e1 == std::string::npos ? e0
-				: e0 == std::string::npos ? e1
-				: std::max(e0, e1);
+		const auto e = data_.find_last_of("/\\");
 		return e == std::string::npos ? path() : data_.substr(0, e);
 	}
 
@@ -65,11 +61,7 @@ namespace utils
 
 	path path::filename() const
 	{
-		const auto e0 = data_.find_last_of('/');
-		const auto e1 = data_.find_last_of('\\');
-		const auto e = e1 == std::string::npos ? e0
-				: e0 == std::string::npos ? e1
-				: std::max(e0, e1);
+		const auto e = data_.find_last_of("/\\");
 		return e == std::string::npos ? data_ : data_.substr(e + 1);
 
 		// WCHAR buffer[MAX_PATH] = {};
@@ -79,28 +71,20 @@ namespace utils
 
 	path path::filename_without_extension() const
 	{
-		WCHAR buffer[MAX_PATH] = {};
-		utf8_to_utf16(data_, buffer);
-
-		PathRemoveExtensionW(buffer);
-		return utf16_to_utf8(PathFindFileNameW(buffer));
+		const auto e = data_.find_last_of("/\\");
+		const auto o = e == std::string::npos ? 0 : e + 1;
+		auto s = data_.find_last_of('.');
+		if (s <= o) s = std::string::npos;
+		return s == std::string::npos ? data_.substr(o) : data_.substr(o, s - o);
 	}
 
 	std::string path::extension() const
 	{
-		WCHAR buffer[MAX_PATH] = {};
-		utf8_to_utf16(data_, buffer);
-
-		return utf16_to_utf8(PathFindExtensionW(buffer));
-	}
-
-	path& path::replace_extension(const std::string& extension)
-	{
-		WCHAR buffer[MAX_PATH] = {};
-		utf8_to_utf16(data_, buffer);
-
-		PathRenameExtensionW(buffer, utf8_to_utf16(extension).c_str());
-		return operator=(utf16_to_utf8(buffer));
+		const auto e = data_.find_last_of("/\\");
+		const auto o = e == std::string::npos ? 0 : e + 1;
+		auto s = data_.find_last_of('.');
+		if (s <= o) s = std::string::npos;
+		return s == std::string::npos ? std::string() : data_.substr(s);
 	}
 
 	path path::operator/(const path& more) const

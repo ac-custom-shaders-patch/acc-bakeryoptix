@@ -185,31 +185,4 @@ namespace std_ext // NOLINT
 	std::vector<std::string> split_string_spaces(const std::string& input);
 	std::vector<std::wstring> split_string(const std::wstring& input, const std::wstring& separator, bool skip_empty = false,
 		bool trim_result = true);
-
-	template <typename charT>
-	struct equal_ci
-	{
-		equal_ci(const std::locale& loc) : loc_(loc) {}
-		bool operator()(charT ch1, charT ch2)
-		{
-			return std::toupper(ch1, loc_) == std::toupper(ch2, loc_);
-		}
-	private:
-		const std::locale& loc_;
-	};
-
-	template <typename T>
-	size_t find_ci(const T& str1, const T& str2, const std::locale& loc = std::locale())
-	{
-		typename T::const_iterator it = std::search(str1.begin(), str1.end(), str2.begin(), str2.end(),
-		                                            equal_ci<typename T::value_type>(loc));
-		if (it == str1.end()) return T::npos;
-		return it - str1.begin();
-	}
-
-	template <typename T>
-	size_t find_ci(const T& str1, const typename T::value_type* str2, const std::locale& loc = std::locale())
-	{
-		return find_ci(str1, T(str2), loc);
-	}
 }

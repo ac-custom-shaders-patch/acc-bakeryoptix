@@ -1,46 +1,16 @@
-/* Copyright (c) 2018, NVIDIA CORPORATION. All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *  * Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *  * Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
- *  * Neither the name of NVIDIA CORPORATION nor the names of its
- *    contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS ``AS IS'' AND ANY
- * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
- * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
- * OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
-
 #include <algorithm>
 #include <map>
 
 #include <bake_ao_optix_prime.h>
-#include <bake_kernels.h>
-#include <bake_util.h>
-
 #include <cuda/buffer.h>
 #include <optixu/optixu_matrix_namespace.h>
 #include <optixu/optixu_math_namespace.h>
 #include <optixu/optixpp_namespace.h>
-#include <optix.h>
-#include <bake_kernels__cpu.h>
 #include <chrono>
+#include <fstream>
 #include <ptx_programs.h>
 #include <utils/cout_progress.h>
+#include <utils/filesystem.h>
 #include <utils/string_operations.h>
 
 using namespace optix;
@@ -58,24 +28,24 @@ Geometry ao_optix_geometry(Handle<ContextObj>& ctx, bake::Mesh* mesh, const Prog
 	{
 		geometry = ctx->createGeometry();
 
-		optix::Buffer attributesBuffer = ctx->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_USER);
-		attributesBuffer->setElementSize(sizeof(bake::MeshVertex));
-		attributesBuffer->setSize(mesh->vertices.size());
+		optix::Buffer buf_attributes = ctx->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_USER);
+		buf_attributes->setElementSize(sizeof(bake::MeshVertex));
+		buf_attributes->setSize(mesh->vertices.size());
 
-		void* dst = attributesBuffer->map(0, RT_BUFFER_MAP_WRITE_DISCARD);
+		void* dst = buf_attributes->map(0, RT_BUFFER_MAP_WRITE_DISCARD);
 		memcpy(dst, mesh->vertices.data(), sizeof(bake::MeshVertex) * mesh->vertices.size());
-		attributesBuffer->unmap();
+		buf_attributes->unmap();
 
-		optix::Buffer indicesBuffer = ctx->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_UNSIGNED_INT3, mesh->triangles.size());
-		dst = indicesBuffer->map(0, RT_BUFFER_MAP_WRITE_DISCARD);
+		optix::Buffer buf_indices = ctx->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_UNSIGNED_INT3, mesh->triangles.size());
+		dst = buf_indices->map(0, RT_BUFFER_MAP_WRITE_DISCARD);
 		memcpy(dst, mesh->triangles.data(), sizeof(optix::uint3) * mesh->triangles.size());
-		indicesBuffer->unmap();
+		buf_indices->unmap();
 
 		geometry->setBoundingBoxProgram(bb);
 		geometry->setIntersectionProgram(intersection);
 
-		geometry["attributesBuffer"]->setBuffer(attributesBuffer);
-		geometry["indicesBuffer"]->setBuffer(indicesBuffer);
+		geometry["attributesBuffer"]->setBuffer(buf_attributes);
+		geometry["indicesBuffer"]->setBuffer(buf_indices);
 		geometry->setPrimitiveCount(uint32_t(mesh->triangles.size()));
 	}
 	catch (optix::Exception& e)
@@ -118,8 +88,8 @@ void set_acceleration_properties(optix::Acceleration acceleration)
 Program load_program(Handle<ContextObj>& ctx, const char* name, const std::string& program)
 {
 	// std::cout << "Loading shader: " << name << std::endl;
-	// return ctx->createProgramFromPTXString(program, name);
-	return ctx->createProgramFromPTXFile(std::string("C:/Development/acc-bakeryoptix/x64/Release/") + name + ".cu.ptx", name);
+	return ctx->createProgramFromPTXString(program, name);
+	// return ctx->createProgramFromPTXFile(std::string("C:/Development/acc-bakeryoptix/x64/Release/") + name + ".cu.ptx", name);
 }
 
 struct cuda_textures_loader
@@ -156,8 +126,40 @@ struct cuda_textures_loader
 	}
 };
 
+static void dump_obj(const utils::path& filename, const std::vector<bake::Mesh*>& meshes)
+{
+	std::ofstream o(filename.string());
+	std::vector<int> start;
+	start.resize(meshes.size() + 1);
+	start[0] = 1;
+
+	for (auto j = 0U; j < meshes.size(); j++)
+	{
+		const auto& m = meshes[j];
+		const auto& x = (*(const optix::Matrix4x4*)&m->matrix).transpose();
+		float4 f4;
+		f4.w = 1.f;
+		for (const auto& vertex : m->vertices)
+		{
+			*(bake::Vec3*)&f4 = vertex.pos;
+			const auto w = f4 * x;
+			o << "v " << w.x << " " << w.y << " " << w.z << std::endl;
+		}
+		start[j + 1] = start[j] + int(m->vertices.size());
+	}
+	for (auto j = 0U; j < meshes.size(); j++)
+	{
+		const auto& m = meshes[j];
+		for (const auto& triangle : m->triangles)
+		{
+			const auto tr = int3{start[j], start[j], start[j]} + *(int3*)&triangle;
+			o << "f " << tr.x << " " << tr.y << " " << tr.z << std::endl;
+		}
+	}
+}
+
 void bake::ao_optix_prime(const std::vector<Mesh*>& blockers, const AOSamples& ao_samples, const int rays_per_sample, const float albedo, const uint bounce_counts,
-	const float scene_offset_scale_horizontal, const float scene_offset_scale_vertical, const float trees_light_pass_chance, float* ao_values)
+	const float scene_offset_scale_horizontal, const float scene_offset_scale_vertical, const float trees_light_pass_chance, bool debug_mode, float* ao_values)
 {
 	auto ctx = Context::create();
 	// ctx->setDevices(devices.begin(), devices.end())
@@ -222,7 +224,11 @@ void bake::ao_optix_prime(const std::vector<Mesh*>& blockers, const AOSamples& a
 	auto children_added = 0U;
 	scene_root->setChildCount(uint32_t(blockers.size()) + 1U);
 	scene_root->setChild(children_added++, plane_transform);
-	// m_rootGroup->setChildCount(blockers.size());
+
+	if (debug_mode)
+	{
+		dump_obj("H:/test/blockers.obj", blockers);
+	}
 
 	for (auto m : blockers)
 	{
@@ -273,7 +279,7 @@ void bake::ao_optix_prime(const std::vector<Mesh*>& blockers, const AOSamples& a
 	unsigned seed = 0;
 
 	// Split sample points into batches
-	const size_t batch_size = 2000000; // Note: fits on GTX 750 (1 GB) along with Hunter model
+	const size_t batch_size = 2000000; // Note: fits on GTX 750 (1 GB) along with Hunter model // TODO: move to options
 	const auto num_batches = std::max(idiv_ceil(ao_samples.num_samples, batch_size), size_t(1));
 
 	cout_progress progress{num_batches * sqrt_rays_per_sample * sqrt_rays_per_sample};
@@ -288,35 +294,23 @@ void bake::ao_optix_prime(const std::vector<Mesh*>& blockers, const AOSamples& a
 		const auto num_samples = std::min(batch_size, ao_samples.num_samples - sample_offset);
 		if (num_samples == 0) continue;
 
-		optix::Buffer buffer_normals = ctx->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT3);
-		{
-			// inNormalsBuffer->setElementSize(sizeof(float3));
-			buffer_normals->setSize(num_samples);
-			void* dst = buffer_normals->map(0, RT_BUFFER_MAP_WRITE_DISCARD);
-			memcpy(dst, &ao_samples.sample_normals[3 * sample_offset], sizeof(float3) * num_samples);
-			buffer_normals->unmap();
-			ctx["inNormalsBuffer"]->setBuffer(buffer_normals);
-		}
+		optix::Buffer buf_normals = ctx->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT3);
+		buf_normals->setSize(num_samples);
+		memcpy(buf_normals->map(0, RT_BUFFER_MAP_WRITE_DISCARD), &ao_samples.sample_normals[3 * sample_offset], sizeof(float3) * num_samples);
+		buf_normals->unmap();
+		ctx["inNormalsBuffer"]->setBuffer(buf_normals);
 
-		optix::Buffer buffer_face_normals = ctx->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT3);
-		{
-			// inFaceNormalsBuffer->setElementSize(sizeof(float3));
-			buffer_face_normals->setSize(num_samples);
-			void* dst = buffer_face_normals->map(0, RT_BUFFER_MAP_WRITE_DISCARD);
-			memcpy(dst, &ao_samples.sample_face_normals[3 * sample_offset], sizeof(float3) * num_samples);
-			buffer_face_normals->unmap();
-			ctx["inFaceNormalsBuffer"]->setBuffer(buffer_face_normals);
-		}
+		optix::Buffer buf_face_normals = ctx->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT3);
+		buf_face_normals->setSize(num_samples);
+		memcpy(buf_face_normals->map(0, RT_BUFFER_MAP_WRITE_DISCARD), &ao_samples.sample_face_normals[3 * sample_offset], sizeof(float3) * num_samples);
+		buf_face_normals->unmap();
+		ctx["inFaceNormalsBuffer"]->setBuffer(buf_face_normals);
 
-		optix::Buffer buffer_positions = ctx->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT3);
-		{
-			// inPositionsBuffer->setElementSize(sizeof(float3));
-			buffer_positions->setSize(num_samples);
-			void* dst = buffer_positions->map(0, RT_BUFFER_MAP_WRITE_DISCARD);
-			memcpy(dst, &ao_samples.sample_positions[3 * sample_offset], sizeof(float3) * num_samples);
-			buffer_positions->unmap();
-			ctx["inPositionsBuffer"]->setBuffer(buffer_positions);
-		}
+		optix::Buffer buf_positions = ctx->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT3);
+		buf_positions->setSize(num_samples);
+		memcpy(buf_positions->map(0, RT_BUFFER_MAP_WRITE_DISCARD), &ao_samples.sample_positions[3 * sample_offset], sizeof(float3) * num_samples);
+		buf_positions->unmap();
+		ctx["inPositionsBuffer"]->setBuffer(buf_positions);
 
 		ctx["numSamples"]->setUint(uint32_t(num_samples));
 		ctx["bounceCounts"]->setUint(bounce_counts);
@@ -325,37 +319,30 @@ void bake::ao_optix_prime(const std::vector<Mesh*>& blockers, const AOSamples& a
 		ctx["baseSeed"]->setUint(seed);
 		ctx["sqrtPasses"]->setInt(sqrt_rays_per_sample);
 
-		auto m_bufferOutput = ctx->createBuffer(RT_BUFFER_INPUT_OUTPUT);
-		m_bufferOutput->setFormat(RT_FORMAT_FLOAT);
-		m_bufferOutput->setSize(num_samples, 1);
-		ctx["sysOutputBuffer"]->set(m_bufferOutput);
+		auto buf_output = ctx->createBuffer(RT_BUFFER_INPUT_OUTPUT);
+		buf_output->setFormat(RT_FORMAT_FLOAT);
+		buf_output->setSize(num_samples, 1);
+		ctx["sysOutputBuffer"]->set(buf_output);
 
 		for (auto i = 0; i < sqrt_rays_per_sample; ++i)
+		{
 			for (auto j = 0; j < sqrt_rays_per_sample; ++j)
 			{
-				// auto i2 = int(float(sqrt_rays_per_sample) * powf(float(i) / float(sqrt_rays_per_sample), 0.4f));
-				// generate_rays(use_cuda, seed, i, j, sqrt_rays_per_sample, scene_offset_scale, ao_samples_device, rays);
-
 				ctx["px"]->setInt(i);
 				ctx["py"]->setInt(j);
 				ctx->launch(0, num_samples, 1);
-
-				// update_ao(use_cuda, num_samples, scene_maxdistance_scale * scene_scale, hits, ao);
-				// update_ao(use_cuda, num_samples, 1.f, hits, ao);
 				progress.report();
 			}
+		}
 
-		void* dst = m_bufferOutput->map(0, RT_BUFFER_MAP_READ);
-		memcpy(&ao_values[sample_offset], dst, sizeof(float) * num_samples);
-		m_bufferOutput->unmap();
+		memcpy(&ao_values[sample_offset], buf_output->map(0, RT_BUFFER_MAP_READ), sizeof(float) * num_samples);
+		buf_output->unmap();
 	}
 
 	// Normalize
 	for (size_t i = 0; i < ao_samples.num_samples; ++i)
 	{
 		ao_values[i] = ao_values[i] / float(rays_per_sample);
-		// ao_values[i] = optix::clamp((1.0f - ao_values[i] / float(rays_per_sample)) * 1.2f, 0.f, 1.f);
 	}
-
 	ctx->destroy();
 }

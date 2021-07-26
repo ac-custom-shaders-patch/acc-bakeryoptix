@@ -1,4 +1,8 @@
 ﻿#include "load_util.h"
+
+#include <fstream>
+#include <functional>
+
 #include "../bake_api.h"
 
 #include <vector_types.h>
@@ -10,7 +14,10 @@
 #include <iomanip>
 #include <map>
 #include <dds/dds_loader.h>
+#include <utils/blob.h>
+#include <utils/custom_crash_handler.h>
 #include <utils/std_ext.h>
+#include <utils/string_operations.h>
 
 // #pragma optimize("", off)
 
@@ -22,10 +29,10 @@ struct load_data
 	std::map<std::string, std::string> textures;
 	std::map<std::string, std::shared_ptr<dds_loader>> loaded_textures;
 
-	std::shared_ptr<dds_loader> get_texture(const std::string& name)
+	std::shared_ptr<dds_loader> get_texture(const std::string& name, bool require)
 	{
 		const auto lf = loaded_textures.find(name);
-		if (lf != loaded_textures.end()) 
+		if (lf != loaded_textures.end())
 		{
 			return lf->second;
 		}
@@ -33,10 +40,195 @@ struct load_data
 		const auto tf = textures.find(name);
 		if (tf == textures.end())
 		{
-			return loaded_textures[name] = std::make_shared<dds_loader>();
+			return loaded_textures[name] = require ? std::make_shared<dds_loader>() : nullptr;
 		}
 
 		return loaded_textures[name] = std::make_shared<dds_loader>(tf->second.c_str(), tf->second.size());
+	}
+};
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846f
+#endif
+
+#ifndef M_TAU
+#define M_TAU (M_PI * 2)
+#endif
+
+#ifndef TORAD
+#define TORAD(x) ((x) * M_PI / 180.0f)
+#endif
+
+#ifndef TODEG
+#define TODEG(x) ((x) * 180.0f / M_PI)
+#endif
+
+inline Matrix4x4 euler(const float head, const float pitch, const float roll)
+{
+	return Matrix4x4::rotate(head, float3{0, 1, 0}) * Matrix4x4::rotate(pitch, float3{1, 0, 0}) * Matrix4x4::rotate(roll, float3{0, 0, 1});
+}
+
+struct model_replacement_params
+{
+	struct node_filter
+	{
+		std::vector<std::string> i;
+		node_filter() = default;
+		node_filter(std::vector<std::string> i) : i(std::move(i)) {}
+
+		bool matches(const bake::NodeBase& node) const
+		{
+			for (const auto& h : i)
+			{
+				if (std_ext::match(h, node.name)) return true;
+			}
+			return false;
+		}
+	};
+
+	struct record
+	{
+		utils::path config_dir;
+		std::string file;
+		std::string insert_kn5;
+		node_filter insert_in;
+		node_filter insert_after;
+		node_filter hide;
+		bool multiple{};
+		bool inserted{};
+
+		float3 rotation;
+		float3 scale{1.f, 1.f, 1.f};
+		float3 offset;
+
+		void tweak(const std::shared_ptr<bake::NodeBase>& node) const
+		{
+			/*auto m = *(Matrix4x4*)&node->matrix;
+			m *= Matrix4x4::scale(scale).transpose();
+			m *= euler(TORAD(rotation.x), TORAD(rotation.y), TORAD(rotation.z)).transpose();
+			m *= Matrix4x4::translate(offset).transpose();
+			*(Matrix4x4*)&node->matrix = m;*/
+		}
+	};
+
+	std::vector<record> records;
+
+	model_replacement_params() = default;
+
+	model_replacement_params(const utils::path& filename, bool look_in_current_dir = false)
+	{
+		if (look_in_current_dir)
+		{
+			load(filename.filename() + ".ini");
+			return;
+		}
+
+		auto relative_path = filename.relative_ac();
+		const auto ac_root = utils::path(filename.string().substr(0, filename.string().size() - relative_path.size() - 1));
+		for (auto& c : relative_path)
+		{
+			if (c == '\\') c = '/';
+		}
+
+		if (utils::starts_with(relative_path, "content/tracks/"))
+		{
+			auto track_id = relative_path.substr(utils::case_str("content/tracks/"));
+			const auto track_id_end = track_id.find('/');
+			if (track_id_end != std::string::npos)
+			{
+				track_id = track_id.substr(0, track_id_end);
+			}
+
+			const auto name = filename.filename().string();
+			std::string layout_id;
+			if (utils::starts_with(name, "models_") && utils::ends_with(name, ".ini"))
+			{
+				layout_id = name.substr(utils::case_str("models_"), name.length() - utils::case_str("models_") - utils::case_str(".ini"));
+			}
+
+			load(ac_root / "extension" / "config" / "tracks" / track_id + ".ini");
+			if (!layout_id.empty())
+			{
+				load(ac_root / "extension" / "config" / "tracks" / track_id + "__" + layout_id + ".ini");
+			}
+		}
+	}
+
+	void load(const utils::path& filename)
+	{
+		if (exists(filename))
+		{
+			const utils::ini_file cfg(utils::path(filename.string()));
+			const auto sections = cfg.iterate_nobreak("MODEL_REPLACEMENT");
+			for (const auto& s : sections)
+			{
+				if (cfg.get(s, "ACTIVE", true))
+				{
+					record r;
+					r.config_dir = filename.parent_path();
+					r.file = cfg.get(s, "FILE", std::string());
+					r.insert_kn5 = cfg.get(s, "INSERT", std::string());
+					r.insert_in = cfg.get(s, "INSERT_IN", std::vector<std::string>());
+					r.insert_after = cfg.get(s, "INSERT_AFTER", std::vector<std::string>());
+					r.hide = cfg.get(s, "HIDE", std::vector<std::string>());
+					r.multiple = cfg.get(s, "MULTIPLE", false);
+					r.rotation = cfg.get(s, "ROTATION", float3());
+					r.scale = cfg.get(s, "SCALE", float3{1.f, 1.f, 1.f});
+					r.offset = cfg.get(s, "OFFSET", float3());
+					records.push_back(std::move(r));
+				}
+			}
+		}
+	}
+
+	model_replacement_params filter(const utils::path& path) const
+	{
+		model_replacement_params ret;
+		auto name = path.filename().string();
+		std::transform(name.begin(), name.end(), name.begin(), tolower);
+		for (auto& r : records)
+		{
+			if (std_ext::match(r.file, name))
+			{
+				ret.records.push_back(r);
+			}
+		}
+		return ret;
+	}
+
+	bool to_remove(const std::shared_ptr<bake::NodeBase>& shared) const
+	{
+		for (const auto& r : records)
+		{
+			if (r.hide.matches(*shared)) return true;
+		}
+		return false;
+	}
+
+	void insert_in(const std::shared_ptr<bake::NodeBase>& shared, std::function<void(const utils::path& p, record& r)> callback)
+	{
+		for (auto& r : records)
+		{
+			if (!r.multiple && r.inserted || r.insert_kn5.empty()) continue;
+			if (r.insert_in.matches(*shared))
+			{
+				r.inserted = true;
+				callback(r.config_dir / r.insert_kn5, r);
+			}
+		}
+	}
+
+	void insert_after(const std::shared_ptr<bake::NodeBase>& shared, std::function<void(const utils::path& p, record& r)> callback)
+	{
+		for (auto& r : records)
+		{
+			if (!r.multiple && r.inserted || r.insert_kn5.empty()) continue;
+			if (r.insert_after.matches(*shared))
+			{
+				r.inserted = true;
+				callback(r.config_dir / r.insert_kn5, r);
+			}
+		}
 	}
 };
 
@@ -88,7 +280,7 @@ static std::shared_ptr<bake::Mesh> load_kn5__read_mesh(load_data& target, const 
 	{
 		t = {reader.read_ushort(), reader.read_ushort(), reader.read_ushort()};
 	}
-	
+
 	const auto material = target.materials[reader.read_uint()];
 	mesh->layer = reader.read_int();
 	mesh->lod_in = reader.read_float();
@@ -211,7 +403,20 @@ static std::shared_ptr<bake::Mesh> proc_mesh(const std::shared_ptr<bake::Mesh>& 
 	return result;
 }
 
-static std::shared_ptr<bake::NodeBase> load_kn5__read_node(load_data& target, const load_params& params, utils::binary_reader& reader)
+static std::shared_ptr<bake::NodeBase> load_kn5_file(const utils::path& filename, const load_params& params, const model_replacement_params& replacement_params,
+	load_data* parent_data, load_data* own_data);
+
+static std::shared_ptr<bake::NodeBase> load_model_replacement(const utils::path& filename, const load_params& params,
+	model_replacement_params::record* replacement_record, load_data* parent_data)
+{
+	load_data own_data;
+	auto r = load_kn5_file(filename, params, {}, parent_data, &own_data);
+	if (replacement_record) replacement_record->tweak(r);
+	return r;
+}
+
+static std::shared_ptr<bake::NodeBase> load_kn5__read_node(load_data& target, const load_params& params, model_replacement_params& replacement_params,
+	utils::binary_reader& reader)
 {
 	const auto node_class = reader.read_uint();
 	const auto name = reader.read_string();
@@ -222,22 +427,29 @@ static std::shared_ptr<bake::NodeBase> load_kn5__read_node(load_data& target, co
 	switch (node_class)
 	{
 		case 0:
-		{
-			auto result = std::make_shared<bake::Node>(name, bake::NodeTransformation::identity());
-			for (auto i = node_children; i > 0; i--)
-			{
-				result->add_child(load_kn5__read_node(target, params, reader));
-			}
-			result->active_local = active;
-			return result;
-		}
-
 		case 1:
 		{
-			auto result = std::make_shared<bake::Node>(name, reader.read_f4x4().transpose());
+			auto result = std::make_shared<bake::Node>(name, node_class == 1 ? reader.read_f4x4().transpose() : bake::NodeTransformation::identity());
 			for (auto i = node_children; i > 0; i--)
 			{
-				result->add_child(load_kn5__read_node(target, params, reader));
+				auto n = load_kn5__read_node(target, params, replacement_params, reader);
+				if (!replacement_params.to_remove(n))
+				{
+					result->add_child(n);
+				}
+
+				replacement_params.insert_after(n, [&](const utils::path& p, model_replacement_params::record& r)
+				{
+					result->add_child(load_model_replacement(p, params, &r, &target));
+				});
+				
+				if (auto n_node = std::dynamic_pointer_cast<bake::Node>(n))
+				{
+					replacement_params.insert_in(n, [&](const utils::path& p, model_replacement_params::record& r)
+					{
+						n_node->add_child(load_model_replacement(p, params, &r, &target));
+					});
+				}
 			}
 			result->active_local = active;
 			return result;
@@ -266,7 +478,8 @@ inline bool uses_alpha_from_normal(const std::string& shader_name)
 		|| shader_name == "nePerPixelNM_heating";
 }
 
-std::shared_ptr<bake::NodeBase> load_kn5_file(const utils::path& filename, const load_params& params)
+static std::shared_ptr<bake::NodeBase> load_kn5_file(const utils::path& filename, const load_params& params, const model_replacement_params& replacement_params,
+	load_data* parent_data, load_data* own_data)
 {
 	if (!exists(filename)) return nullptr;
 
@@ -287,7 +500,6 @@ std::shared_ptr<bake::NodeBase> load_kn5_file(const utils::path& filename, const
 		// reader.skip(size); // length+data
 
 		target.textures[name] = reader.read_data(size);
-		// dds_loader::load_data(data.c_str(), data.size());
 	}
 
 	for (auto i = reader.read_uint(); i > 0; i--)
@@ -321,7 +533,14 @@ std::shared_ptr<bake::NodeBase> load_kn5_file(const utils::path& filename, const
 		{
 			if (const auto tx = mat->get_resource_or_null(uses_alpha_from_normal(mat->shader) ? "txNormal" : "txDiffuse"))
 			{
-				mat->texture = target.get_texture(tx->texture);
+				if (parent_data)
+				{
+					mat->texture = parent_data->get_texture(tx->texture, false);
+				}
+				if (!mat->texture)
+				{
+					mat->texture = target.get_texture(tx->texture, true);
+				}
 			}
 		}
 
@@ -329,7 +548,11 @@ std::shared_ptr<bake::NodeBase> load_kn5_file(const utils::path& filename, const
 	}
 
 	target.textures.clear();
-	return load_kn5__read_node(target, params, reader);
+
+	auto replacement = replacement_params.filter(filename);
+	auto ret = load_kn5__read_node(target, params, replacement, reader);
+	if (own_data) *own_data = std::move(target);
+	return ret;
 }
 
 std::shared_ptr<bake::Node> load_model(const utils::path& filename, const load_params& params)
@@ -338,21 +561,149 @@ std::shared_ptr<bake::Node> load_model(const utils::path& filename, const load_p
 
 	auto p = utils::path(filename);
 	auto result = std::make_shared<bake::Node>(bake::Node(""));
+	const model_replacement_params model_replacement(filename);
 
 	if (p.string().find(".kn5") != std::string::npos)
 	{
-		result->add_child(load_kn5_file(p, params));
+		result->add_child(load_kn5_file(p, params, model_replacement, nullptr, nullptr));
 	}
 	else
 	{
 		const auto ini = utils::ini_file(filename);
 		for (const auto& s : ini.iterate_break("MODEL"))
 		{
-			result->add_child(load_kn5_file(p.parent_path() / ini.get(s, "FILE", std::string()), params));
+			result->add_child(load_kn5_file(p.parent_path() / ini.get(s, "FILE", std::string()), params, model_replacement, nullptr, nullptr));
 		}
 	}
 
 	return result;
+}
+
+inline void write_file(const utils::path& filename, const utils::blob_view& data)
+{
+	auto s = std::ofstream(filename.wstring(), std::ios::binary);
+	std::copy(data.begin(), data.end(), std::ostream_iterator<char>(s));
+}
+
+void replacement_optimization(const utils::path& track_dir)
+{
+	std::map<std::string, uint64_t> default_textures;
+	const model_replacement_params model_replacement(track_dir, true);
+	if (model_replacement.records.empty()) return;
+
+	std::map<std::string, int> models;
+	int max_value{};
+	for (auto& filename : list_files(track_dir, "models*.ini"))
+	{
+		utils::ini_file models_ini(filename);
+		for (const auto& s : models_ini.iterate_break("MODEL"))
+		{
+			auto file = models_ini.get(s, "FILE", std::string());
+			if (!file.empty())
+			{
+				max_value = max(max_value, ++models[file]);
+			}
+		}
+	}
+
+	for (auto& filename : list_files(track_dir, "*.kn5"))
+	{
+		if (!models.empty())
+		{
+			auto f = models.find(filename.filename().string());
+			if (f != models.end() && f->second < max_value)
+			{
+				std::cout << "Skipping partially used: " << filename.filename() << std::endl;
+				continue;
+			}
+		}
+		
+		utils::binary_reader reader(filename);
+		if (!reader.match("sc6969")) continue;
+
+		const auto version = reader.read_uint();
+		if (version == 6) reader.read_uint();
+		if (version > 6) continue;
+
+		for (auto i = reader.read_uint(); i > 0; i--)
+		{
+			if (reader.read_uint() == 0) continue;
+			const auto name = reader.read_string();
+			const auto size = reader.read_uint();
+			const auto hash_code = utils::hash_code(reader.read_data(size));
+			const auto found = default_textures.find(name);
+			default_textures[name] = found != default_textures.end() && found->second != hash_code ? 0ULL : hash_code;
+		}
+	}
+
+	for (const auto& record : model_replacement.records)
+	{
+		if (record.insert_kn5.empty()) continue;
+		
+		const auto replacement_filename = record.config_dir / record.insert_kn5;
+		std::cout << "Processing: " << replacement_filename.filename() << std::endl;
+		utils::binary_reader reader(replacement_filename);
+		if (!reader.match("sc6969")) continue;
+
+		utils::blob fixed_kn5;
+		fixed_kn5.append("sc6969", 6);
+
+		const auto version = reader.read_uint();
+		fixed_kn5 << version;
+		if (version == 6) fixed_kn5 << reader.read_uint();
+		if (version > 6) continue;
+
+		struct texture_info
+		{
+			std::string name;
+			std::string data;
+		};
+		std::vector<texture_info> textures;
+
+		const auto textures_count = reader.read_uint();
+		for (auto i = textures_count; i > 0; i--)
+		{
+			auto state = reader.read_uint();
+			if (state == 0) continue;
+
+			const auto name = reader.read_string();
+			const auto size = reader.read_uint();
+			auto data = reader.read_data(size);
+			const auto hash_code = utils::hash_code(data);
+			const auto found = default_textures.find(name);
+			if (found == default_textures.end() || hash_code != found->second)
+			{
+				textures.push_back({name, std::move(data)});
+			}
+			else
+			{
+				std::cout << "\tRemoving: " << name << std::endl;
+			}
+		}
+
+		const auto destination = replacement_filename.parent_path() / ".optimized" / replacement_filename.filename();
+		if (textures.size() == textures_count)
+		{
+			std::cout << "\tNothing to remove, leaving KN5 as it is" << std::endl;
+			if (exists(destination))
+			{
+				DeleteFileW(destination.wstring().c_str());
+			}
+			continue;
+		}
+
+		fixed_kn5 << uint32_t(textures.size());
+		for (auto& t : textures)
+		{
+			fixed_kn5 << 1U;
+			fixed_kn5 << t.name;
+			fixed_kn5 << t.data;
+		}
+
+		auto remaining = reader.read_rest();
+		fixed_kn5.append(remaining.data(), remaining.size());
+		write_file(destination, fixed_kn5);
+	}
 }
 
 Matrix4x4 rotation_quaternion(const float4& rotation)

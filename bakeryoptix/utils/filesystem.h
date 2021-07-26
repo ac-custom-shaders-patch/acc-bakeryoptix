@@ -68,8 +68,6 @@ namespace utils
 			return operator=(parent_path());
 		}
 
-		path& replace_extension(const std::string& extension);
-
 		path operator/(const path& more) const;
 
 		path operator+(char c) const

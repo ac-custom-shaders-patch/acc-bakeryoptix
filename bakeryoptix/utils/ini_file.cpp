@@ -219,7 +219,7 @@ namespace utils
 
 	static void resolve_sequential(std::unordered_map<std::string, section>& c)
 	{
-		// std::unordered_map<std::string, section> renamed;
+		std::unordered_map<std::string, section> renamed;
 		for (auto it = c.begin(); it != c.end();)
 		{
 			auto& k = it->first;
@@ -230,9 +230,10 @@ namespace utils
 				for (auto i = 0; i < 10000; i++)
 				{
 					auto candidate = prefix + std::to_string(i);
-					if (c.find(candidate) == c.end())
+					if (c.find(candidate) == c.end()
+						&& renamed.find(candidate) == c.end())
 					{
-						c[candidate] = it->second;
+						renamed[candidate] = it->second;
 						c.erase(it);
 						goto next;
 					}
@@ -243,10 +244,10 @@ namespace utils
 		next: {}
 		}
 
-		/*for (auto i : renamed)
+		for (auto i : renamed)
 		{
 			c[i.first] = i.second;
-		}*/
+		}
 	}
 
 	static bool is_dataacd_file(const path& path, utils::path& acd_path, std::string& car_id)

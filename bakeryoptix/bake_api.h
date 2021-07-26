@@ -225,6 +225,8 @@ namespace bake
 			return nodes.empty() ? nullptr : nodes[0];
 		}
 
+		std::shared_ptr<Node> find_node(const std::string& filter) const;
+
 		NodeTransformation matrix_local;
 		NodeTransformation matrix_local_orig;
 		std::vector<std::shared_ptr<NodeBase>> children;
