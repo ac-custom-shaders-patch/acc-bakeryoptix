@@ -7,18 +7,22 @@
 #include <bake_ao_optix_prime.h>
 #include <bake_api.h>
 #include <bake_sample.h>
-#include <assert.h>
-#include <utils/dbg_output.h>
 
-void set_vertex_entry(float* vertices, const int idx, const int axis, float* vec)
+inline void set_vertex_entry(float* vertices, const int idx, const int axis, float* vec)
 {
 	vertices[3 * idx + axis] = vec[axis];
 }
 
-void make_ground_plane(const float scene_bbox_min[3], const float scene_bbox_max[3], int upaxis, const float scale_factor,
+inline void set_vertex_value(float* vertices, const int idx, const int axis, float vec)
+{
+	vertices[3 * idx + axis] = vec;
+}
+
+static void make_ground_plane(const float scene_bbox_min[3], const float scene_bbox_max[3], int upaxis, const float scale_factor,
 	const float offset_factor, std::vector<bake::Mesh*>& meshes, bake::Scene& scene)
 {
 	auto plane_mesh = new bake::Mesh();
+	plane_mesh->name = "blocker";
 	plane_mesh->vertices.resize(4);
 	plane_mesh->triangles = {
 		{0, 1, 2},
@@ -89,7 +93,29 @@ void make_ground_plane(const float scene_bbox_min[3], const float scene_bbox_max
 	meshes.push_back(plane_mesh);
 }
 
-void allocate_ao_samples(bake::AOSamples& ao_samples, size_t n)
+static void make_emissive_plane(const bake_params::light_emitter& emitter, std::vector<bake::Mesh*>& meshes)
+{
+	auto plane_mesh = new bake::Mesh();
+	plane_mesh->name = "emissive";
+	plane_mesh->lod_out = emitter.intensity;
+	plane_mesh->vertices.resize(4);
+	plane_mesh->triangles = {
+		{0, 1, 2},
+		{0, 2, 3},
+		{2, 1, 0},
+		{3, 2, 0}
+	};
+	
+	for (size_t i = 0; i < 4; ++i)
+	{
+		plane_mesh->vertices[i].pos = emitter.pos[i];
+	}
+
+	plane_mesh->matrix = bake::NodeTransformation::identity();
+	meshes.push_back(plane_mesh);
+}
+
+static void allocate_ao_samples(bake::AOSamples& ao_samples, size_t n)
 {
 	ao_samples.num_samples = n;
 	ao_samples.sample_positions = new float[3 * n];
@@ -98,7 +124,7 @@ void allocate_ao_samples(bake::AOSamples& ao_samples, size_t n)
 	ao_samples.sample_infos = new bake::SampleInfo[n];
 }
 
-void destroy_ao_samples(bake::AOSamples& ao_samples)
+static void destroy_ao_samples(bake::AOSamples& ao_samples)
 {
 	delete [] ao_samples.sample_positions;
 	ao_samples.sample_positions = nullptr;
@@ -204,8 +230,14 @@ baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene, cons
 			make_ground_plane(scene->bbox_min, scene->bbox_max, config.ground_upaxis, config.ground_scale_factor, config.ground_offset_factor, blocker_meshes, *scene);
 		}
 
+		for (const auto& c : config.light_emitters)
+		{
+			make_emissive_plane(c, blocker_meshes);
+		}
+
 		ao_optix_prime(blocker_meshes, ao_samples, config.num_rays, config.scene_albedo, uint32_t(config.bounce_counts),
-			config.scene_offset_scale_horizontal, config.scene_offset_scale_vertical, config.trees_light_pass_chance, config.debug_mode, &ao_values[0]);
+			config.scene_offset_scale_horizontal, config.scene_offset_scale_vertical, config.trees_light_pass_chance,
+			config.stack_size, config.batch_size, config.debug_mode, &ao_values[0]);
 	}
 
 	// Mapping AO to vertices

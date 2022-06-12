@@ -33,6 +33,8 @@ namespace utils
 			return virtual_;
 		}
 
+		void extend(const ini_file& ini_file);
+
 		static ini_file parse(const std::string& data);
 		static ini_file parse(std::shared_ptr<data_chunk> chunk);
 

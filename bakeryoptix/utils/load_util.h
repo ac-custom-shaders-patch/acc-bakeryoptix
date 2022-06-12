@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <memory>
 #include <bake_api.h>
+#include <utils/filesystem.h>
 
 inline void expand_bbox(float bbox_min[3], float bbox_max[3], const float v[3])
 {
@@ -28,6 +29,10 @@ struct load_params
 	std::vector<std::string> exclude_patch;
 	std::vector<std::string> exclude_blockers;
 	bool exclude_blockers_alpha_test{};
+	bool exclude_blockers_alpha_blend{};
+
+	utils::path car_configs_dir;
+	utils::path track_configs_dir;
 };
 
 std::shared_ptr<bake::HierarchyNode> load_hierarchy(const utils::path& filename);

@@ -231,7 +231,7 @@ namespace utils
 				{
 					auto candidate = prefix + std::to_string(i);
 					if (c.find(candidate) == c.end()
-						&& renamed.find(candidate) == c.end())
+						&& renamed.find(candidate) == renamed.end())
 					{
 						renamed[candidate] = it->second;
 						c.erase(it);
@@ -244,9 +244,9 @@ namespace utils
 		next: {}
 		}
 
-		for (auto i : renamed)
+		for (auto& i : renamed)
 		{
-			c[i.first] = i.second;
+			c[i.first] = std::move(i.second);
 		}
 	}
 
@@ -535,6 +535,17 @@ namespace utils
 	ini_file::~ini_file()
 	{
 		save();
+	}
+
+	void ini_file::extend(const ini_file& ini_file)
+	{
+		for (const auto& s : ini_file.sections)
+		{
+			for (const auto& p : s.second)
+			{
+				sections[s.first][p.first] = p.second;
+			}
+		}
 	}
 
 	ini_file ini_file::parse(const std::string& data)

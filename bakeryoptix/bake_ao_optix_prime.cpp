@@ -159,14 +159,15 @@ static void dump_obj(const utils::path& filename, const std::vector<bake::Mesh*>
 }
 
 void bake::ao_optix_prime(const std::vector<Mesh*>& blockers, const AOSamples& ao_samples, const int rays_per_sample, const float albedo, const uint bounce_counts,
-	const float scene_offset_scale_horizontal, const float scene_offset_scale_vertical, const float trees_light_pass_chance, bool debug_mode, float* ao_values)
+	const float scene_offset_scale_horizontal, const float scene_offset_scale_vertical, const float trees_light_pass_chance,
+	uint stack_size, size_t batch_size, bool debug_mode, float* ao_values)
 {
 	auto ctx = Context::create();
 	// ctx->setDevices(devices.begin(), devices.end())
 
 	ctx->setEntryPointCount(1); // 0 = render
 	ctx->setRayTypeCount(1);    // 0 = radiance;
-	ctx->setStackSize(1024);
+	ctx->setStackSize(stack_size);
 	//ctx->setPrintEnabled(true);
 	//ctx->setExceptionEnabled(RT_EXCEPTION_ALL, true);
 
@@ -174,6 +175,7 @@ void bake::ao_optix_prime(const std::vector<Mesh*>& blockers, const AOSamples& a
 	const auto bb = load_program(ctx, "raybb", ptx_program_raybb());
 	const auto intersection = load_program(ctx, "rayintersection", ptx_program_rayintersection());
 	const auto hit = load_program(ctx, "rayhit", ptx_program_rayhit());
+	const auto hit_emissive = load_program(ctx, "rayhit_emissive", ptx_program_rayhit_emissive());
 	const auto anyhit = load_program(ctx, "rayanyhit", ptx_program_rayanyhit());
 	const auto anyhit_tree = load_program(ctx, "rayanyhit_tree", ptx_program_rayanyhit_tree());
 
@@ -188,11 +190,17 @@ void bake::ao_optix_prime(const std::vector<Mesh*>& blockers, const AOSamples& a
 	mat_foliage->setAnyHitProgram(0, anyhit_tree);
 	mat_foliage->setClosestHitProgram(0, hit);
 
+	auto mat_emissive = ctx->createMaterial();
+	mat_emissive->setClosestHitProgram(0, hit_emissive);
+
 	auto scene_accell = ctx->createAcceleration(m_builder); // No need to set acceleration properties on the top level Acceleration.
 	auto scene_root = ctx->createGroup();                   // The scene's root group nodes becomes the sysTopObject.
 	scene_root->setAcceleration(scene_accell);
 	ctx["sysTopObject"]->set(scene_root); // This is where the rtTrace calls start the BVH traversal. (Same for radiance and shadow rays.)
 
+	auto children_added = 0U;
+
+	/*
 	optix::Geometry plane_geometry = create_plane(ctx, bb, intersection);
 	optix::GeometryInstance plane_instance = ctx->createGeometryInstance(); // This connects Geometries with Materials.
 	plane_instance->setGeometry(plane_geometry);
@@ -221,9 +229,10 @@ void bake::ao_optix_prime(const std::vector<Mesh*>& blockers, const AOSamples& a
 	plane_transform->setMatrix(false, plane_matrix.getData(), plane_matrix.inverse().getData());
 
 	// Add the transform node placeing the plane to the scene's root Group node.
-	auto children_added = 0U;
 	scene_root->setChildCount(uint32_t(blockers.size()) + 1U);
 	scene_root->setChild(children_added++, plane_transform);
+	*/
+	scene_root->setChildCount(uint32_t(blockers.size()));
 
 	if (debug_mode)
 	{
@@ -239,28 +248,50 @@ void bake::ao_optix_prime(const std::vector<Mesh*>& blockers, const AOSamples& a
 		mesh_instance->setGeometry(ao_optix_geometry(ctx, m, bb, intersection));
 		mesh_instance->setMaterialCount(1);
 
-		if (m->material && m->material->texture && m->material->texture->data)
+		if (m->material)
 		{
-			const auto is_foliage = utils::starts_with(m->material->shader, "ksTree");
-			mesh_instance->setMaterial(0, is_foliage ? mat_foliage : mat_alphatest);
-			mesh_instance["parMaterialTexture"]->setTextureSampler(textures_loader.load_texture(*m->material->texture));
-
-			const auto var = m->material->get_var_or_null("ksAlphaRef");
-			mesh_instance["parMaterialAlphaRef"]->setFloat((var ? var->v1 : 0.5f) * 255.f);
-
-			if (is_foliage)
+			if (m->material && m->material->texture && m->material->texture->data)
 			{
-				mesh_instance["parMaterialPassChange"]->setFloat(trees_light_pass_chance);
-			}
+				const auto is_foliage = utils::starts_with(m->material->shader, "ksTree");
+				mesh_instance->setMaterial(0, is_foliage ? mat_foliage : mat_alphatest);
+				mesh_instance["parMaterialTexture"]->setTextureSampler(textures_loader.load_texture(*m->material->texture));
 
-			//std::cout << (is_foliage ? "Foliage: " : "Alpha-test: ") << m->name << ", material: " << m->material->name << ", shader: " << m->material->shader
-			//	<< ", alpha ref.: " << (var ? var->v1 : 0.5f) << "\n";
+				const auto var = m->material->get_var_or_null("ksAlphaRef");
+				mesh_instance["parMaterialAlphaRef"]->setFloat((var ? var->v1 : 0.5f) * 255.f);
+
+				if (is_foliage)
+				{
+					mesh_instance["parMaterialPassChange"]->setFloat(trees_light_pass_chance);
+				}
+
+				//std::cout << (is_foliage ? "Foliage: " : "Alpha-test: ") << m->name << ", material: " << m->material->name << ", shader: " << m->material->shader
+				//	<< ", alpha ref.: " << (var ? var->v1 : 0.5f) << "\n";
+			}
+			else
+			{
+				mesh_instance->setMaterial(0, mat_opaque);
+			}
+			mesh_instance["parMaterialAlbedo"]->setFloat(albedo);
 		}
 		else
 		{
-			mesh_instance->setMaterial(0, mat_opaque);
+			if (m->name == "blocker")
+			{
+				mesh_instance->setMaterial(0, mat_opaque);
+				mesh_instance["parMaterialAlbedo"]->setFloat(0.2f);
+			}
+			else if (m->name == "emissive")
+			{
+				mesh_instance->setMaterial(0, mat_emissive);
+				mesh_instance["parMaterialAlbedo"]->setFloat(1.f);
+				mesh_instance["parMaterialEmissive"]->setFloat(m->lod_out);
+			}
+			else
+			{
+				mesh_instance->setMaterial(0, mat_opaque);
+				mesh_instance["parMaterialAlbedo"]->setFloat(albedo);
+			}
 		}
-		mesh_instance["parMaterialAlbedo"]->setFloat(albedo);
 
 		optix::GeometryGroup mesh_group = ctx->createGeometryGroup();
 		// This connects GeometryInstances with Acceleration structures. (All OptiX nodes with "Group" in the name hold an Acceleration.)
@@ -279,7 +310,6 @@ void bake::ao_optix_prime(const std::vector<Mesh*>& blockers, const AOSamples& a
 	unsigned seed = 0;
 
 	// Split sample points into batches
-	const size_t batch_size = 2000000; // Note: fits on GTX 750 (1 GB) along with Hunter model // TODO: move to options
 	const auto num_batches = std::max(idiv_ceil(ao_samples.num_samples, batch_size), size_t(1));
 
 	cout_progress progress{num_batches * sqrt_rays_per_sample * sqrt_rays_per_sample};

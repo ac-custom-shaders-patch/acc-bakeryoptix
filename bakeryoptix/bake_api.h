@@ -273,6 +273,7 @@ namespace bake
 	{
 		Scene(const std::shared_ptr<Node>& root);
 		Scene(const std::vector<std::shared_ptr<Node>>& nodes);
+		Scene(std::vector<std::shared_ptr<Mesh>> receivers, SceneBlockers blockers);
 		
 		std::vector<std::shared_ptr<Mesh>> receivers;
 		std::vector<Vec3> extra_receive_points;

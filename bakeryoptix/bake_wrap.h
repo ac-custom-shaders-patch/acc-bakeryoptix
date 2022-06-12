@@ -15,6 +15,9 @@ struct bake_params {
 	bool fix_incorrect_normals;
 	bool debug_mode;
 
+	uint32_t stack_size = 1024;
+	size_t batch_size = 2000000;
+
 	bool sample_on_points;
 	bake::Vec3 sample_offset;
 
@@ -32,6 +35,13 @@ struct bake_params {
 
 	bake::VertexFilterMode filter_mode;
 	float regularization_weight;
+
+	struct light_emitter
+	{
+		std::array<bake::Vec3, 4> pos;
+		float intensity;
+	};
+	std::vector<light_emitter> light_emitters;
 };
 
 struct bake_wrap final

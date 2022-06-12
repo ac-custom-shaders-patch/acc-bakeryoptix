@@ -85,7 +85,14 @@ utils::ini_file load_config(const utils::path& filename)
 	if (!exists(config)) config = filename.parent_path() / "baked shadow params.ini";
 	if (!exists(config)) config = get_executable_filename().parent_path() / "baked_shadow_params.ini";
 	if (!exists(config)) config = get_executable_filename().parent_path() / "baked shadow params.ini";
-	return utils::ini_file{config};
+
+	auto ret = utils::ini_file{config};
+	const auto local_settings = get_executable_filename().parent_path() / "baked_shadow_params__local.ini";
+	if (exists(local_settings))
+	{
+		ret.extend(utils::ini_file{local_settings});
+	}
+	return ret;
 }
 
 void add_materials(std::set<std::string>& dest, const std::vector<std::shared_ptr<bake::Mesh>>& meshes)
@@ -350,7 +357,7 @@ struct file_processor
 			if (std_ext::match(config.get(s, mode, std::string()), id))
 			{
 				const auto desc = config.get(s, "DESCRIPTION", std::string());
-				std::cout << "Found spec. options" << (desc.empty() ? " for `" + id + "`" : ": " + desc) << "\n";
+				std::cout << "Found spec. options" << (desc.empty() ? " for `" + id + "`" : ": " + desc) << std::endl;
 				for (const auto& p : config.sections[s])
 				{
 					auto i = p.first.find("__");
@@ -370,13 +377,18 @@ struct file_processor
 		cfg_load.exclude_patch = config.get(section, "EXCLUDE_FROM_BAKING", std::vector<std::string>());
 		cfg_load.exclude_blockers = config.get(section, "FORCE_PASSING_LIGHT", std::vector<std::string>());
 		cfg_load.exclude_blockers_alpha_test = config.get(section, "FORCE_ALPHA_TEST_PASSING_LIGHT", false);
+		cfg_load.exclude_blockers_alpha_blend = config.get(section, "FORCE_ALPHA_BLEND_PASSING_LIGHT", false);
 		cfg_load.normals_bias = config.get(section, "NORMALS_Y_BIAS", 0.f);
+		cfg_load.car_configs_dir = config.get("GENERAL", "CAR_CONFIGS_DIR", utils::path());
+		cfg_load.track_configs_dir = config.get("GENERAL", "TRACK_CONFIGS_DIR", utils::path());
 
 		resolving_cockpit_hr = config.get(section, "COCKPIT_HR_NODES", std::vector<std::string>{"COCKPIT_HR"});
 		resolving_cockpit_lr = config.get(section, "COCKPIT_LR_NODES", std::vector<std::string>{"COCKPIT_LR"});
 
 		cfg_bake.sample_on_points = false;
 		cfg_bake.disable_normals = false;
+		cfg_bake.batch_size = config.get("GENERAL", "BATCH_SIZE", 2000000ULL);
+		cfg_bake.stack_size = config.get("GENERAL", "STACK_SIZE", 1024U);
 		cfg_bake.num_samples = config.get(section, "SAMPLES", std::string("AUTO")) == "AUTO" ? 0 : config.get(section, "SAMPLES", 0);
 		cfg_bake.min_samples_per_face = config.get(section, "MIN_SAMPLES_PER_FACE", 4);
 		cfg_bake.num_rays = config.get(section, "RAYS_PER_SAMPLE", 64);
@@ -394,6 +406,28 @@ struct file_processor
 			? VERTEX_FILTER_LEAST_SQUARES
 			: VERTEX_FILTER_AREA_BASED;
 		cfg_bake.regularization_weight = config.get(section, "FILTER_REGULARIZATION_WEIGHT", 0.1f);
+
+		for (auto i = 0; i < 100; ++i)
+		{
+			const auto key = "EMISSIVE_" + std::to_string(i);
+			float intensity;
+			if (config.try_get(section, key, intensity))
+			{
+				const auto p0 = config.get(section, key + "_P0", float3());
+				const auto p1 = config.get(section, key + "_P1", float3());
+				const auto p2 = config.get(section, key + "_P2", float3());
+				const auto p3 = config.get(section, key + "_P3", float3());
+				cfg_bake.light_emitters.push_back({
+					{
+						Vec3{p0.x, p0.y, p0.z},
+						Vec3{p1.x, p1.y, p1.z},
+						Vec3{p2.x, p2.y, p2.z},
+						Vec3{p3.x, p3.y, p3.z},
+					},
+					intensity
+				});
+			}
+		}
 
 		cfg_save.averaging_threshold = config.get(section, "AVERAGING_THRESHOLD", 0.f);
 		cfg_save.averaging_cos_threshold = config.get(section, "AVERAGING_COS_THRESHOLD", 0.95f);
@@ -1066,23 +1100,6 @@ struct file_processor
 				if (v.x > bb_min.x && v.z > bb_min.y
 					&& v.x < bb_max.x && v.z < bb_max.y)
 				{
-					/*auto id = std::numeric_limits<uint32_t>::max();
-					v.y += 100.f;
-					auto length = 1000.f;
-					DBG(v.x, v.y, v.z, length)
-					accel.TraverseDownSimple(&vertices[0].x, &mesh->triangles[0].a, &v.x, length, id);
-					DBG(length)
-					if (id != std::numeric_limits<uint32_t>::max())
-					{
-						DBG(length);
-						const auto new_y = v.y - length;
-						if (new_y > y || y_fault >= 0.f)
-						{
-							y = new_y;
-							y_fault = -1.f;
-						}
-					}*/
-
 					nanort::Ray<float> r{};
 					r.dir[0] = 0.f;
 					r.dir[1] = -1.f;
@@ -1140,7 +1157,6 @@ struct file_processor
 				nanort::BVHBuildOptions<float> build_options;
 				build_options.cache_bbox = true;
 				const nanort::TriangleMesh<float> rt_mesh(&vertices[0].x, &mesh_ptr->triangles[0].a);
-				// DBG(mesh_ptr->triangles[0].a)
 				accel.Build(uint32_t(mesh_ptr->triangles.size()), rt_mesh, nanort::TriangleSAHPred<float>(&vertices[0].x, &mesh_ptr->triangles[0].a), build_options);
 				mesh = std::move(mesh_ptr);
 			}
@@ -1362,6 +1378,14 @@ struct file_processor
 
 	baked_data bake_stuff(const std::shared_ptr<Node>& root)
 	{
+		// A quick check beforehand
+		if (FEATURE_ACTIVE("REQUIRE_INTERIOR") && root->find_nodes(resolve_filter({"@COCKPIT_HR"})).empty())
+		{
+			std::cout << "Warning: interior nodes are missing.\n\t"
+				"Baking AO without interior adjustments might result in interior being too dark.\n\t"
+				"To fix issue, either add COCKPIT_HR or modify config." << std::endl;
+		}
+
 		// Generating AO
 		std::cout << "Main pass:" << std::endl;
 		const auto root_scene = std::make_shared<Scene>(root);
@@ -1374,6 +1398,39 @@ struct file_processor
 		}
 
 		auto ao = bake_scene(root_scene, cfg_bake, true);
+
+		if (FEATURE_ACTIVE("REBAKE_DARK_OBJECTS"))
+		{
+			const auto dark_ao_threshold = config.get(section, "DARK_AO_THRESHOLD", 0.01f);
+			const auto dark_vertices_share_threshold = config.get(section, "DARK_VERTICES_SHARE_THRESHOLD", 0.2f);
+			
+			std::vector<std::shared_ptr<Mesh>> receivers;
+			for (const auto& p : ao.entries)
+			{
+				auto dark = 0U;
+				for (auto i : p.second.main_set)
+				{
+					if (i.x < dark_ao_threshold)
+					{
+						++dark;
+					}
+				}
+				if (float(dark) > float(p.second.main_set.size()) * dark_vertices_share_threshold && dark > 20)
+				{
+					receivers.push_back(p.first);
+				}
+			}
+
+			if (!receivers.empty())
+			{
+				std::cout << "Rebaking " << receivers.size() << " dark " << (receivers.size() > 1 ? "objects:" : "object:") << std::endl;
+				auto scene_r = std::make_shared<Scene>(std::move(receivers), root_scene->blockers);
+				auto cfg_bake_dark = cfg_bake;
+				cfg_bake_dark.num_rays = config.get(section, "DARK_RAYS_PER_SAMPLE", cfg_bake_dark.num_rays);
+				cfg_bake_dark.min_samples_per_face = config.get(section, "DARK_MIN_SAMPLES_PER_FACE", cfg_bake_dark.min_samples_per_face);
+				ao.replace(bake_wrap::bake_scene(scene_r, root_scene->blockers.full, cfg_bake_dark, true));
+			}
+		}
 
 		// Applying trees shadow factor
 		const auto trees_shadow_factor = config.get(section, "TREES_SHADOW_FACTOR", 1.f);
@@ -1440,7 +1497,7 @@ struct file_processor
 			ao.extend(bake_driver_shadows());
 		}
 
-		// Special options
+		// Special options		
 		if (FEATURE_ACTIVE("BAKE_BLURRED") && blurred_objects.any(input_file))
 		{
 			auto blurred = root->find_nodes(resolve_filter(blurred_objects.blurred_names));
@@ -1817,7 +1874,7 @@ int main(int argc, const char** argv)
 		}
 		
 		#else
-		
+
 		bool is_cuda_available;
 		int cuda_version;
 		const auto cuda_result = cudaRuntimeGetVersion(&cuda_version);

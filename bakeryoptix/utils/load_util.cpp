@@ -115,14 +115,13 @@ struct model_replacement_params
 
 	model_replacement_params() = default;
 
-	model_replacement_params(const utils::path& filename, bool look_in_current_dir = false)
+	model_replacement_params(const utils::path& filename)
 	{
-		if (look_in_current_dir)
-		{
-			load(filename.filename() + ".ini");
-			return;
-		}
+		load(filename.filename() + ".ini");
+	}
 
+	model_replacement_params(const utils::path& filename, const load_params& params)
+	{
 		auto relative_path = filename.relative_ac();
 		const auto ac_root = utils::path(filename.string().substr(0, filename.string().size() - relative_path.size() - 1));
 		for (auto& c : relative_path)
@@ -132,6 +131,12 @@ struct model_replacement_params
 
 		if (utils::starts_with(relative_path, "content/tracks/"))
 		{
+			auto track_config_dir = params.track_configs_dir;
+			if (!track_config_dir.is_absolute())
+			{
+				track_config_dir = ac_root / track_config_dir;
+			}
+			
 			auto track_id = relative_path.substr(utils::case_str("content/tracks/"));
 			const auto track_id_end = track_id.find('/');
 			if (track_id_end != std::string::npos)
@@ -146,10 +151,10 @@ struct model_replacement_params
 				layout_id = name.substr(utils::case_str("models_"), name.length() - utils::case_str("models_") - utils::case_str(".ini"));
 			}
 
-			load(ac_root / "extension" / "config" / "tracks" / track_id + ".ini");
+			load(track_config_dir / track_id + ".ini");
 			if (!layout_id.empty())
 			{
-				load(ac_root / "extension" / "config" / "tracks" / track_id + "__" + layout_id + ".ini");
+				load(track_config_dir / track_id + "__" + layout_id + ".ini");
 			}
 		}
 	}
@@ -287,7 +292,8 @@ static std::shared_ptr<bake::Mesh> load_kn5__read_mesh(load_data& target, const 
 	mesh->lod_out = reader.read_float();
 	reader.skip(sizeof(float3) + 4);
 
-	if (params.exclude_blockers_alpha_test && (material->alpha_tested || material->blend == bake::MaterialBlendMode::coverage))
+	if (params.exclude_blockers_alpha_test && (material->alpha_tested || material->blend == bake::MaterialBlendMode::coverage)
+		|| params.exclude_blockers_alpha_blend && material->blend == bake::MaterialBlendMode::blend)
 	{
 		mesh->cast_shadows = false;
 	}
@@ -357,7 +363,8 @@ static std::shared_ptr<bake::Mesh> load_kn5__read_skinned_mesh(load_data& target
 	mesh->lod_in = reader.read_float();
 	mesh->lod_out = reader.read_float();
 
-	if (params.exclude_blockers_alpha_test && (material->alpha_tested || material->blend == bake::MaterialBlendMode::coverage))
+	if (params.exclude_blockers_alpha_test && (material->alpha_tested || material->blend == bake::MaterialBlendMode::coverage)
+		|| params.exclude_blockers_alpha_blend && material->blend == bake::MaterialBlendMode::blend)
 	{
 		mesh->cast_shadows = false;
 	}
@@ -561,7 +568,7 @@ std::shared_ptr<bake::Node> load_model(const utils::path& filename, const load_p
 
 	auto p = utils::path(filename);
 	auto result = std::make_shared<bake::Node>(bake::Node(""));
-	const model_replacement_params model_replacement(filename);
+	const model_replacement_params model_replacement(filename, params);
 
 	if (p.string().find(".kn5") != std::string::npos)
 	{
@@ -588,7 +595,7 @@ inline void write_file(const utils::path& filename, const utils::blob_view& data
 void replacement_optimization(const utils::path& track_dir)
 {
 	std::map<std::string, uint64_t> default_textures;
-	const model_replacement_params model_replacement(track_dir, true);
+	const model_replacement_params model_replacement(track_dir);
 	if (model_replacement.records.empty()) return;
 
 	std::map<std::string, int> models;

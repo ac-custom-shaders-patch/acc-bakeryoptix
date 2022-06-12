@@ -95,7 +95,16 @@ inline size_t vertex_key(const bake::MeshVertex& t, const bake::Vec3& n, float m
 		roundf((t.pos.x + n.x * normal_contribution) * mult),
 		roundf((t.pos.y + n.y * normal_contribution) * mult),
 		roundf((t.pos.z + n.z * normal_contribution) * mult)};
-	return *(size_t*)&v.x * 397 ^ size_t(*(uint32_t*)&v.z);
+	
+	const auto c = [](float v) -> uint64_t
+	{
+		auto i = int64_t(v);
+		return *(uint64_t*)&i & 0xffffffff;
+	};
+	uint64_t r = c(v.x);
+	r |= c(v.z) << 32;
+	r ^= c(v.y) << 16;
+	return r;
 }
 
 void baked_data::smooth_ao()
@@ -103,32 +112,34 @@ void baked_data::smooth_ao()
 	struct data
 	{
 		float2 main, alternative;
+		uint32_t count{};
 
 		void add(const baked_data_mesh& m, uint32_t i)
 		{
-			main.x = std::max(main.x, m.main_set[i].x);
-			main.y = std::max(main.y, m.main_set[i].y);
+			main.x += m.main_set[i].x;
+			main.y += m.main_set[i].y;
 			if (!m.alternative_set.empty())
 			{
-				alternative.x = std::max(alternative.x, m.alternative_set[i].x);
-				alternative.y = std::max(alternative.y, m.alternative_set[i].y);
+				alternative.x += m.alternative_set[i].x;
+				alternative.y += m.alternative_set[i].y;
 			}
+			++count;
 		}
 
 		void fill(baked_data_mesh& m, uint32_t i) const
 		{
-			m.main_set[i] = main;
+			m.main_set[i] = main / float(count);
 			if (!m.alternative_set.empty())
 			{
-				m.alternative_set[i] = alternative;
+				m.alternative_set[i] = alternative / float(count);
 			}
 		}
 	};
 
 	std::unordered_map<size_t, data> v;
 
-	const auto mult = 1.f / 0.005f;
-	const auto normal_contribution = 0.01f;
+	const auto mult = 1.f / 0.0001f;
+	const auto normal_contribution = 0.0005f;
 	
 	cout_progress progress_smooth{entries.size() * 2};
 	for (const auto& m : entries)

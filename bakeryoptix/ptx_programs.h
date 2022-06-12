@@ -397,6 +397,70 @@ inline std::string ptx_program_raygeneration(){
   return s;
 }
 
+inline std::string ptx_program_rayhit_emissive(){ 
+  std::string s;
+  s += ".version 5.0\n.target sm_20\n.address_size 64\n\n .global .align 4 .b8 sysTopObject[4];\n.global .align 4 .b8 theRay[36]";
+  s += ";\n.global .align 4 .f32 theIntersectionDistance;\n.global .align 4 .b8 thePrd[72];\n.global .align 4 .b8 varGeoNormal[1";
+  s += "2];\n.global .align 4 .b8 varNormal[12];\n.global .align 4 .b8 varTexCoord[12];\n.global .align 4 .f32 parMaterialAlbedo";
+  s += ";\n.global .align 4 .f32 parMaterialEmissive;\n.global .align 8 .u64 _ZN21rti_internal_register20reg_bitness_detectorE;";
+  s += "\n.global .align 8 .u64 _ZN21rti_internal_register24reg_exception_64_detail0E;\n.global .align 8 .u64 _ZN21rti_internal_";
+  s += "register24reg_exception_64_detail1E;\n.global .align 8 .u64 _ZN21rti_internal_register24reg_exception_64_detail2E;\n.glo";
+  s += "bal .align 8 .u64 _ZN21rti_internal_register24reg_exception_64_detail3E;\n.global .align 8 .u64 _ZN21rti_internal_regist";
+  s += "er24reg_exception_64_detail4E;\n.global .align 8 .u64 _ZN21rti_internal_register24reg_exception_64_detail5E;\n.global .a";
+  s += "lign 8 .u64 _ZN21rti_internal_register24reg_exception_64_detail6E;\n.global .align 8 .u64 _ZN21rti_internal_register24re";
+  s += "g_exception_64_detail7E;\n.global .align 8 .u64 _ZN21rti_internal_register24reg_exception_64_detail8E;\n.global .align 8";
+  s += " .u64 _ZN21rti_internal_register24reg_exception_64_detail9E;\n.global .align 4 .u32 _ZN21rti_internal_register21reg_exce";
+  s += "ption_detail0E;\n.global .align 4 .u32 _ZN21rti_internal_register21reg_exception_detail1E;\n.global .align 4 .u32 _ZN21r";
+  s += "ti_internal_register21reg_exception_detail2E;\n.global .align 4 .u32 _ZN21rti_internal_register21reg_exception_detail3E;";
+  s += "\n.global .align 4 .u32 _ZN21rti_internal_register21reg_exception_detail4E;\n.global .align 4 .u32 _ZN21rti_internal_reg";
+  s += "ister21reg_exception_detail5E;\n.global .align 4 .u32 _ZN21rti_internal_register21reg_exception_detail6E;\n.global .alig";
+  s += "n 4 .u32 _ZN21rti_internal_register21reg_exception_detail7E;\n.global .align 4 .u32 _ZN21rti_internal_register21reg_exce";
+  s += "ption_detail8E;\n.global .align 4 .u32 _ZN21rti_internal_register21reg_exception_detail9E;\n.global .align 4 .u32 _ZN21r";
+  s += "ti_internal_register14reg_rayIndex_xE;\n.global .align 4 .u32 _ZN21rti_internal_register14reg_rayIndex_yE;\n.global .ali";
+  s += "gn 4 .u32 _ZN21rti_internal_register14reg_rayIndex_zE;\n.global .align 4 .b8 _ZN21rti_internal_typeinfo12sysTopObjectE[8";
+  s += "] = {82, 97, 121, 0, 4, 0, 0, 0};\n.global .align 4 .b8 _ZN21rti_internal_typeinfo6theRayE[8] = {82, 97, 121, 0, 36, 0, ";
+  s += "0, 0};\n.global .align 4 .b8 _ZN21rti_internal_typeinfo23theIntersectionDistanceE[8] = {82, 97, 121, 0, 4, 0, 0, 0};\n.g";
+  s += "lobal .align 4 .b8 _ZN21rti_internal_typeinfo6thePrdE[8] = {82, 97, 121, 0, 72, 0, 0, 0};\n.global .align 4 .b8 _ZN21rti";
+  s += "_internal_typeinfo12varGeoNormalE[8] = {82, 97, 121, 0, 12, 0, 0, 0};\n.global .align 4 .b8 _ZN21rti_internal_typeinfo9v";
+  s += "arNormalE[8] = {82, 97, 121, 0, 12, 0, 0, 0};\n.global .align 4 .b8 _ZN21rti_internal_typeinfo11varTexCoordE[8] = {82, 9";
+  s += "7, 121, 0, 12, 0, 0, 0};\n.global .align 4 .b8 _ZN21rti_internal_typeinfo17parMaterialAlbedoE[8] = {82, 97, 121, 0, 4, 0";
+  s += ", 0, 0};\n.global .align 4 .b8 _ZN21rti_internal_typeinfo19parMaterialEmissiveE[8] = {82, 97, 121, 0, 4, 0, 0, 0};\n.glo";
+  s += "bal .align 1 .b8 _ZN21rti_internal_typename12sysTopObjectE[9] = {114, 116, 79, 98, 106, 101, 99, 116, 0};\n.global .alig";
+  s += "n 1 .b8 _ZN21rti_internal_typename6theRayE[11] = {111, 112, 116, 105, 120, 58, 58, 82, 97, 121, 0};\n.global .align 1 .b";
+  s += "8 _ZN21rti_internal_typename23theIntersectionDistanceE[6] = {102, 108, 111, 97, 116, 0};\n.global .align 1 .b8 _ZN21rti_";
+  s += "internal_typename6thePrdE[11] = {80, 101, 114, 82, 97, 121, 68, 97, 116, 97, 0};\n.global .align 1 .b8 _ZN21rti_internal";
+  s += "_typename12varGeoNormalE[14] = {111, 112, 116, 105, 120, 58, 58, 102, 108, 111, 97, 116, 51, 0};\n.global .align 1 .b8 _";
+  s += "ZN21rti_internal_typename9varNormalE[14] = {111, 112, 116, 105, 120, 58, 58, 102, 108, 111, 97, 116, 51, 0};\n.global .a";
+  s += "lign 1 .b8 _ZN21rti_internal_typename11varTexCoordE[14] = {111, 112, 116, 105, 120, 58, 58, 102, 108, 111, 97, 116, 51, ";
+  s += "0};\n.global .align 1 .b8 _ZN21rti_internal_typename17parMaterialAlbedoE[6] = {102, 108, 111, 97, 116, 0};\n.global .ali";
+  s += "gn 1 .b8 _ZN21rti_internal_typename19parMaterialEmissiveE[6] = {102, 108, 111, 97, 116, 0};\n.global .align 4 .u32 _ZN21";
+  s += "rti_internal_typeenum12sysTopObjectE = 4919;\n.global .align 4 .u32 _ZN21rti_internal_typeenum6theRayE = 4919;\n.global ";
+  s += ".align 4 .u32 _ZN21rti_internal_typeenum23theIntersectionDistanceE = 4919;\n.global .align 4 .u32 _ZN21rti_internal_type";
+  s += "enum6thePrdE = 4919;\n.global .align 4 .u32 _ZN21rti_internal_typeenum12varGeoNormalE = 4919;\n.global .align 4 .u32 _ZN";
+  s += "21rti_internal_typeenum9varNormalE = 4919;\n.global .align 4 .u32 _ZN21rti_internal_typeenum11varTexCoordE = 4919;\n.glo";
+  s += "bal .align 4 .u32 _ZN21rti_internal_typeenum17parMaterialAlbedoE = 4919;\n.global .align 4 .u32 _ZN21rti_internal_typeen";
+  s += "um19parMaterialEmissiveE = 4919;\n.global .align 1 .b8 _ZN21rti_internal_semantic12sysTopObjectE[1];\n.global .align 1 .";
+  s += "b8 _ZN21rti_internal_semantic6theRayE[13] = {114, 116, 67, 117, 114, 114, 101, 110, 116, 82, 97, 121, 0};\n.global .alig";
+  s += "n 1 .b8 _ZN21rti_internal_semantic23theIntersectionDistanceE[23] = {114, 116, 73, 110, 116, 101, 114, 115, 101, 99, 116,";
+  s += " 105, 111, 110, 68, 105, 115, 116, 97, 110, 99, 101, 0};\n.global .align 1 .b8 _ZN21rti_internal_semantic6thePrdE[10] = ";
+  s += "{114, 116, 80, 97, 121, 108, 111, 97, 100, 0};\n.global .align 1 .b8 _ZN21rti_internal_semantic12varGeoNormalE[21] = {97";
+  s += ", 116, 116, 114, 105, 98, 117, 116, 101, 32, 71, 69, 79, 95, 78, 79, 82, 77, 65, 76, 0};\n.global .align 1 .b8 _ZN21rti_";
+  s += "internal_semantic9varNormalE[17] = {97, 116, 116, 114, 105, 98, 117, 116, 101, 32, 78, 79, 82, 77, 65, 76, 0};\n.global ";
+  s += ".align 1 .b8 _ZN21rti_internal_semantic11varTexCoordE[19] = {97, 116, 116, 114, 105, 98, 117, 116, 101, 32, 84, 69, 88, ";
+  s += "67, 79, 79, 82, 68, 0};\n.global .align 1 .b8 _ZN21rti_internal_semantic17parMaterialAlbedoE[1];\n.global .align 1 .b8 _";
+  s += "ZN21rti_internal_semantic19parMaterialEmissiveE[1];\n.global .align 1 .b8 _ZN23rti_internal_annotation12sysTopObjectE[1]";
+  s += ";\n.global .align 1 .b8 _ZN23rti_internal_annotation6theRayE[1];\n.global .align 1 .b8 _ZN23rti_internal_annotation23the";
+  s += "IntersectionDistanceE[1];\n.global .align 1 .b8 _ZN23rti_internal_annotation6thePrdE[1];\n.global .align 1 .b8 _ZN23rti_";
+  s += "internal_annotation12varGeoNormalE[1];\n.global .align 1 .b8 _ZN23rti_internal_annotation9varNormalE[1];\n.global .align";
+  s += " 1 .b8 _ZN23rti_internal_annotation11varTexCoordE[1];\n.global .align 1 .b8 _ZN23rti_internal_annotation17parMaterialAlb";
+  s += "edoE[1];\n.global .align 1 .b8 _ZN23rti_internal_annotation19parMaterialEmissiveE[1];\n\n.visible .entry _Z15rayhit_emis";
+  s += "sivev(\n\n)\n{\n .reg .f32 %f<2>;\n .reg .b32 %r<3>;\n .reg .b64 %rd<3>;\n\n\n ldu.global.f32 %f1, [parMaterialEmissive]";
+  s += ";\n mov.u64 %rd1, thePrd;\n st.global.f32 [thePrd+36], %f1;\n st.global.f32 [thePrd+40], %f1;\n st.global.f32 [thePrd+44";
+  s += "], %f1;\n add.s64 %rd2, %rd1, 48;\n ldu.global.u32 %r1, [%rd2];\n or.b32 %r2, %r1, -2147483648;\n st.global.u32 [thePrd+";
+  s += "48], %r2;\n ret;\n}";
+  return s;
+}
+
 inline std::string ptx_program_rayhit(){ 
   std::string s;
   s += ".version 5.0\n.target sm_20\n.address_size 64\n\n .global .align 4 .b8 sysTopObject[4];\n.global .align 4 .b8 theRay[36]";

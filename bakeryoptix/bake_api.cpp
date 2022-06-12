@@ -680,6 +680,20 @@ Scene::Scene(const std::vector<std::shared_ptr<Node>>& nodes)
 	}
 }
 
+Scene::Scene(std::vector<std::shared_ptr<Mesh>> receivers, SceneBlockers blockers)
+	: receivers(std::move(receivers)), blockers(std::move(blockers))
+{
+	for (const auto& m : receivers)
+	{
+		const auto& x = to_matrix(m->matrix).transpose();
+		for (const auto& v : m->vertices)
+		{
+			const auto w = transform_pos(v.pos, x);
+			expand_bbox(bbox_min, bbox_max, &w.x);
+		}
+	}
+}
+
 void align_hierarchy(const HierarchyNode* that, const std::shared_ptr<Node>& root, const NodeTransformation& offset)
 {
 	auto target = root->name == that->name ? root : root->find_node(Filter({that->name}));
