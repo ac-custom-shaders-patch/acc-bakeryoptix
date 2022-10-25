@@ -28,6 +28,7 @@ namespace utils
 
 		int read_int() { return read_ref<int>(); }
 		uint32_t read_uint() { return read_ref<uint32_t>(); }
+		uint64_t read_uint64() { return read_ref<uint64_t>(); }
 		uint16_t read_ushort() { return read_ref<uint16_t>(); }
 		float read_float() { return read_ref<float>(); }
 		float2 read_f2() { return read_ref<vec2>().optix(); }

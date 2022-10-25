@@ -43,6 +43,7 @@ rtDeclareVariable(uint, numSamples, , );
 rtDeclareVariable(uint, baseSeed, , );
 rtDeclareVariable(float, sceneOffsetHorizontal, , );
 rtDeclareVariable(float, sceneOffsetVertical, , );
+rtDeclareVariable(float, rayDirAlign, , );
 
 rtDeclareVariable(uint2, theLaunchDim, rtLaunchDim, );
 rtDeclareVariable(uint2, theLaunchIndex, rtLaunchIndex, );
@@ -131,6 +132,11 @@ RT_PROGRAM void raygeneration()
 	if (optix::dot(ray_dir, sample_face_norm) <= 0.0f)
 	{
 		ray_dir = -ray_dir;
+	}
+
+	if (rayDirAlign > 0)
+	{
+		ray_dir = optix::normalize(ray_dir + sample_face_norm * rayDirAlign);
 	}
 
 	PerRayData prd;

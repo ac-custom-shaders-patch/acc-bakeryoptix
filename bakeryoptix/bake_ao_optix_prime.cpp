@@ -158,7 +158,8 @@ static void dump_obj(const utils::path& filename, const std::vector<bake::Mesh*>
 	}
 }
 
-void bake::ao_optix_prime(const std::vector<Mesh*>& blockers, const AOSamples& ao_samples, const int rays_per_sample, const float albedo, const uint bounce_counts,
+void bake::ao_optix_prime(const std::vector<Mesh*>& blockers, 
+	const AOSamples& ao_samples, const int rays_per_sample, const float albedo, const uint bounce_counts,
 	const float scene_offset_scale_horizontal, const float scene_offset_scale_vertical, const float trees_light_pass_chance,
 	uint stack_size, size_t batch_size, bool debug_mode, float* ao_values)
 {
@@ -178,6 +179,7 @@ void bake::ao_optix_prime(const std::vector<Mesh*>& blockers, const AOSamples& a
 	const auto hit_emissive = load_program(ctx, "rayhit_emissive", ptx_program_rayhit_emissive());
 	const auto anyhit = load_program(ctx, "rayanyhit", ptx_program_rayanyhit());
 	const auto anyhit_tree = load_program(ctx, "rayanyhit_tree", ptx_program_rayanyhit_tree());
+	const auto anyhit_proctree = load_program(ctx, "rayanyhit_proctree", ptx_program_rayanyhit_proctree());
 
 	auto mat_opaque = ctx->createMaterial();
 	mat_opaque->setClosestHitProgram(0, hit);
@@ -189,6 +191,10 @@ void bake::ao_optix_prime(const std::vector<Mesh*>& blockers, const AOSamples& a
 	auto mat_foliage = ctx->createMaterial();
 	mat_foliage->setAnyHitProgram(0, anyhit_tree);
 	mat_foliage->setClosestHitProgram(0, hit);
+
+	auto mat_proc_foliage = ctx->createMaterial();
+	mat_proc_foliage->setAnyHitProgram(0, anyhit_proctree);
+	mat_proc_foliage->setClosestHitProgram(0, hit);
 
 	auto mat_emissive = ctx->createMaterial();
 	mat_emissive->setClosestHitProgram(0, hit_emissive);
@@ -280,6 +286,11 @@ void bake::ao_optix_prime(const std::vector<Mesh*>& blockers, const AOSamples& a
 				mesh_instance->setMaterial(0, mat_opaque);
 				mesh_instance["parMaterialAlbedo"]->setFloat(0.2f);
 			}
+			else if (m->name == "trees")
+			{
+				mesh_instance->setMaterial(0, mat_proc_foliage);
+				mesh_instance["parMaterialAlbedo"]->setFloat(0.2f);
+			}
 			else if (m->name == "emissive")
 			{
 				mesh_instance->setMaterial(0, mat_emissive);
@@ -346,6 +357,7 @@ void bake::ao_optix_prime(const std::vector<Mesh*>& blockers, const AOSamples& a
 		ctx["bounceCounts"]->setUint(bounce_counts);
 		ctx["sceneOffsetHorizontal"]->setFloat(scene_offset_scale_horizontal);
 		ctx["sceneOffsetVertical"]->setFloat(scene_offset_scale_vertical);
+		ctx["rayDirAlign"]->setFloat(ao_samples.align_rays);
 		ctx["baseSeed"]->setUint(seed);
 		ctx["sqrtPasses"]->setInt(sqrt_rays_per_sample);
 

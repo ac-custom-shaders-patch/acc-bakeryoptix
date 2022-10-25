@@ -1,4 +1,5 @@
-/* Copyright (c) 2018, NVIDIA CORPORATION. All rights reserved.
+/* 
+ * Copyright (c) 2013-2018, NVIDIA CORPORATION. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -25,13 +26,26 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#pragma once
-#include <bake_api.h>
+#include "ray.h"
 
-namespace bake
+#include <optix.h>
+#include <optixu/optixu_math_namespace.h>
+
+// Attributes.
+rtDeclareVariable(optix::float3, varGeoNormal, attribute GEO_NORMAL, );
+//rtDeclareVariable(optix::float3, varTangent,   attribute TANGENT, );
+rtDeclareVariable(optix::float3, varNormal, attribute NORMAL, );
+rtDeclareVariable(optix::float3, varTexCoord, attribute TEXCOORD, );
+
+RT_FUNCTION float frac(float v)
 {
-	void ao_optix_prime(const std::vector<Mesh*>& blockers, 
-		const AOSamples& ao_samples, int rays_per_sample, float albedo, uint32_t bounce_counts,
-		float scene_offset_scale_horizontal, float scene_offset_scale_vertical, float trees_light_pass_chance, 
-		uint32_t stack_size, size_t batch_size, bool debug_mode, float* ao_values);
+	return v - floorf(v);
+}
+
+RT_PROGRAM void rayanyhit_proctree()
+{
+	if (frac(varTexCoord.x * 697.4581 + varTexCoord.y * 246.5266) < 0.5)
+	{
+		rtIgnoreIntersection();
+	}
 }

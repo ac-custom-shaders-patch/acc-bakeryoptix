@@ -68,6 +68,55 @@ inline Matrix4x4 euler(const float head, const float pitch, const float roll)
 	return Matrix4x4::rotate(head, float3{0, 1, 0}) * Matrix4x4::rotate(pitch, float3{1, 0, 0}) * Matrix4x4::rotate(roll, float3{0, 0, 1});
 }
 
+std::vector<utils::ini_file> collect_configs(const utils::path& filename, const load_params& params)
+{
+	std::vector<utils::ini_file> ret;
+	const auto load = [&](const utils::path& arg)
+	{
+		if (exists(arg))
+		{
+			ret.emplace_back(arg);
+		}
+	};
+
+	auto relative_path = filename.relative_ac();
+	const auto ac_root = utils::path(filename.string().substr(0, filename.string().size() - relative_path.size() - 1));
+	for (auto& c : relative_path)
+	{
+		if (c == '\\') c = '/';
+	}
+
+	if (utils::starts_with(relative_path, "content/tracks/"))
+	{
+		auto track_config_dir = params.track_configs_dir;
+		if (!track_config_dir.is_absolute())
+		{
+			track_config_dir = ac_root / track_config_dir;
+		}
+
+		auto track_id = relative_path.substr(utils::case_str("content/tracks/"));
+		const auto track_id_end = track_id.find('/');
+		if (track_id_end != std::string::npos)
+		{
+			track_id = track_id.substr(0, track_id_end);
+		}
+
+		const auto name = filename.filename().string();
+		std::string layout_id;
+		if (utils::starts_with(name, "models_") && utils::ends_with(name, ".ini"))
+		{
+			layout_id = name.substr(utils::case_str("models_"), name.length() - utils::case_str("models_") - utils::case_str(".ini"));
+		}
+
+		load(track_config_dir / track_id + ".ini");
+		if (!layout_id.empty())
+		{
+			load(track_config_dir / track_id + "__" + layout_id + ".ini");
+		}
+	}
+	return ret;
+}
+
 struct model_replacement_params
 {
 	struct node_filter
@@ -117,71 +166,36 @@ struct model_replacement_params
 
 	model_replacement_params(const utils::path& filename)
 	{
-		load(filename.filename() + ".ini");
+		load(utils::ini_file(filename.filename() + ".ini"));
 	}
 
 	model_replacement_params(const utils::path& filename, const load_params& params)
 	{
-		auto relative_path = filename.relative_ac();
-		const auto ac_root = utils::path(filename.string().substr(0, filename.string().size() - relative_path.size() - 1));
-		for (auto& c : relative_path)
+		for (const auto& cfg : collect_configs(filename, params))
 		{
-			if (c == '\\') c = '/';
-		}
-
-		if (utils::starts_with(relative_path, "content/tracks/"))
-		{
-			auto track_config_dir = params.track_configs_dir;
-			if (!track_config_dir.is_absolute())
-			{
-				track_config_dir = ac_root / track_config_dir;
-			}
-			
-			auto track_id = relative_path.substr(utils::case_str("content/tracks/"));
-			const auto track_id_end = track_id.find('/');
-			if (track_id_end != std::string::npos)
-			{
-				track_id = track_id.substr(0, track_id_end);
-			}
-
-			const auto name = filename.filename().string();
-			std::string layout_id;
-			if (utils::starts_with(name, "models_") && utils::ends_with(name, ".ini"))
-			{
-				layout_id = name.substr(utils::case_str("models_"), name.length() - utils::case_str("models_") - utils::case_str(".ini"));
-			}
-
-			load(track_config_dir / track_id + ".ini");
-			if (!layout_id.empty())
-			{
-				load(track_config_dir / track_id + "__" + layout_id + ".ini");
-			}
+			load(cfg);
 		}
 	}
 
-	void load(const utils::path& filename)
+	void load(const utils::ini_file& cfg)
 	{
-		if (exists(filename))
+		const auto sections = cfg.iterate_nobreak("MODEL_REPLACEMENT");
+		for (const auto& s : sections)
 		{
-			const utils::ini_file cfg(utils::path(filename.string()));
-			const auto sections = cfg.iterate_nobreak("MODEL_REPLACEMENT");
-			for (const auto& s : sections)
+			if (cfg.get(s, "ACTIVE", true))
 			{
-				if (cfg.get(s, "ACTIVE", true))
-				{
-					record r;
-					r.config_dir = filename.parent_path();
-					r.file = cfg.get(s, "FILE", std::string());
-					r.insert_kn5 = cfg.get(s, "INSERT", std::string());
-					r.insert_in = cfg.get(s, "INSERT_IN", std::vector<std::string>());
-					r.insert_after = cfg.get(s, "INSERT_AFTER", std::vector<std::string>());
-					r.hide = cfg.get(s, "HIDE", std::vector<std::string>());
-					r.multiple = cfg.get(s, "MULTIPLE", false);
-					r.rotation = cfg.get(s, "ROTATION", float3());
-					r.scale = cfg.get(s, "SCALE", float3{1.f, 1.f, 1.f});
-					r.offset = cfg.get(s, "OFFSET", float3());
-					records.push_back(std::move(r));
-				}
+				record r;
+				r.config_dir = cfg.filename.parent_path();
+				r.file = cfg.get(s, "FILE", std::string());
+				r.insert_kn5 = cfg.get(s, "INSERT", std::string());
+				r.insert_in = cfg.get(s, "INSERT_IN", std::vector<std::string>());
+				r.insert_after = cfg.get(s, "INSERT_AFTER", std::vector<std::string>());
+				r.hide = cfg.get(s, "HIDE", std::vector<std::string>());
+				r.multiple = cfg.get(s, "MULTIPLE", false);
+				r.rotation = cfg.get(s, "ROTATION", float3());
+				r.scale = cfg.get(s, "SCALE", float3{1.f, 1.f, 1.f});
+				r.offset = cfg.get(s, "OFFSET", float3());
+				records.push_back(std::move(r));
 			}
 		}
 	}
@@ -241,7 +255,7 @@ static std::shared_ptr<bake::HierarchyNode> load_knh__read_node(utils::binary_re
 {
 	const auto name = reader.read_string();
 	const auto transformation = reader.read_f4x4().transpose();
-	const auto result = std::make_shared<bake::HierarchyNode>(name, transformation);
+	auto result = std::make_shared<bake::HierarchyNode>(name, transformation);
 	result->children.resize(reader.read_uint());
 	for (auto& i : result->children)
 	{
@@ -449,7 +463,7 @@ static std::shared_ptr<bake::NodeBase> load_kn5__read_node(load_data& target, co
 				{
 					result->add_child(load_model_replacement(p, params, &r, &target));
 				});
-				
+
 				if (auto n_node = std::dynamic_pointer_cast<bake::Node>(n))
 				{
 					replacement_params.insert_in(n, [&](const utils::path& p, model_replacement_params::record& r)
@@ -624,7 +638,7 @@ void replacement_optimization(const utils::path& track_dir)
 				continue;
 			}
 		}
-		
+
 		utils::binary_reader reader(filename);
 		if (!reader.match("sc6969")) continue;
 
@@ -646,7 +660,7 @@ void replacement_optimization(const utils::path& track_dir)
 	for (const auto& record : model_replacement.records)
 	{
 		if (record.insert_kn5.empty()) continue;
-		
+
 		const auto replacement_filename = record.config_dir / record.insert_kn5;
 		std::cout << "Processing: " << replacement_filename.filename() << std::endl;
 		utils::binary_reader reader(replacement_filename);

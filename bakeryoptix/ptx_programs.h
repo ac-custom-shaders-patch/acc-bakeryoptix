@@ -1,6 +1,46 @@
 #pragma once
 #include <string>
 
+inline std::string ptx_program_rayanyhit_proctree(){ 
+  std::string s;
+  s += ".version 5.0\n.target sm_20\n.address_size 64\n\n .global .align 4 .b8 varGeoNormal[12];\n.global .align 4 .b8 varNormal";
+  s += "[12];\n.global .align 4 .b8 varTexCoord[12];\n.global .align 8 .u64 _ZN21rti_internal_register20reg_bitness_detectorE;\n";
+  s += ".global .align 8 .u64 _ZN21rti_internal_register24reg_exception_64_detail0E;\n.global .align 8 .u64 _ZN21rti_internal_re";
+  s += "gister24reg_exception_64_detail1E;\n.global .align 8 .u64 _ZN21rti_internal_register24reg_exception_64_detail2E;\n.globa";
+  s += "l .align 8 .u64 _ZN21rti_internal_register24reg_exception_64_detail3E;\n.global .align 8 .u64 _ZN21rti_internal_register";
+  s += "24reg_exception_64_detail4E;\n.global .align 8 .u64 _ZN21rti_internal_register24reg_exception_64_detail5E;\n.global .ali";
+  s += "gn 8 .u64 _ZN21rti_internal_register24reg_exception_64_detail6E;\n.global .align 8 .u64 _ZN21rti_internal_register24reg_";
+  s += "exception_64_detail7E;\n.global .align 8 .u64 _ZN21rti_internal_register24reg_exception_64_detail8E;\n.global .align 8 .";
+  s += "u64 _ZN21rti_internal_register24reg_exception_64_detail9E;\n.global .align 4 .u32 _ZN21rti_internal_register21reg_except";
+  s += "ion_detail0E;\n.global .align 4 .u32 _ZN21rti_internal_register21reg_exception_detail1E;\n.global .align 4 .u32 _ZN21rti";
+  s += "_internal_register21reg_exception_detail2E;\n.global .align 4 .u32 _ZN21rti_internal_register21reg_exception_detail3E;\n";
+  s += ".global .align 4 .u32 _ZN21rti_internal_register21reg_exception_detail4E;\n.global .align 4 .u32 _ZN21rti_internal_regis";
+  s += "ter21reg_exception_detail5E;\n.global .align 4 .u32 _ZN21rti_internal_register21reg_exception_detail6E;\n.global .align ";
+  s += "4 .u32 _ZN21rti_internal_register21reg_exception_detail7E;\n.global .align 4 .u32 _ZN21rti_internal_register21reg_except";
+  s += "ion_detail8E;\n.global .align 4 .u32 _ZN21rti_internal_register21reg_exception_detail9E;\n.global .align 4 .u32 _ZN21rti";
+  s += "_internal_register14reg_rayIndex_xE;\n.global .align 4 .u32 _ZN21rti_internal_register14reg_rayIndex_yE;\n.global .align";
+  s += " 4 .u32 _ZN21rti_internal_register14reg_rayIndex_zE;\n.global .align 4 .b8 _ZN21rti_internal_typeinfo12varGeoNormalE[8] ";
+  s += "= {82, 97, 121, 0, 12, 0, 0, 0};\n.global .align 4 .b8 _ZN21rti_internal_typeinfo9varNormalE[8] = {82, 97, 121, 0, 12, 0";
+  s += ", 0, 0};\n.global .align 4 .b8 _ZN21rti_internal_typeinfo11varTexCoordE[8] = {82, 97, 121, 0, 12, 0, 0, 0};\n.global .al";
+  s += "ign 1 .b8 _ZN21rti_internal_typename12varGeoNormalE[14] = {111, 112, 116, 105, 120, 58, 58, 102, 108, 111, 97, 116, 51, ";
+  s += "0};\n.global .align 1 .b8 _ZN21rti_internal_typename9varNormalE[14] = {111, 112, 116, 105, 120, 58, 58, 102, 108, 111, 9";
+  s += "7, 116, 51, 0};\n.global .align 1 .b8 _ZN21rti_internal_typename11varTexCoordE[14] = {111, 112, 116, 105, 120, 58, 58, 1";
+  s += "02, 108, 111, 97, 116, 51, 0};\n.global .align 4 .u32 _ZN21rti_internal_typeenum12varGeoNormalE = 4919;\n.global .align ";
+  s += "4 .u32 _ZN21rti_internal_typeenum9varNormalE = 4919;\n.global .align 4 .u32 _ZN21rti_internal_typeenum11varTexCoordE = 4";
+  s += "919;\n.global .align 1 .b8 _ZN21rti_internal_semantic12varGeoNormalE[21] = {97, 116, 116, 114, 105, 98, 117, 116, 101, 3";
+  s += "2, 71, 69, 79, 95, 78, 79, 82, 77, 65, 76, 0};\n.global .align 1 .b8 _ZN21rti_internal_semantic9varNormalE[17] = {97, 11";
+  s += "6, 116, 114, 105, 98, 117, 116, 101, 32, 78, 79, 82, 77, 65, 76, 0};\n.global .align 1 .b8 _ZN21rti_internal_semantic11v";
+  s += "arTexCoordE[19] = {97, 116, 116, 114, 105, 98, 117, 116, 101, 32, 84, 69, 88, 67, 79, 79, 82, 68, 0};\n.global .align 1 ";
+  s += ".b8 _ZN23rti_internal_annotation12varGeoNormalE[1];\n.global .align 1 .b8 _ZN23rti_internal_annotation9varNormalE[1];\n.";
+  s += "global .align 1 .b8 _ZN23rti_internal_annotation11varTexCoordE[1];\n\n.visible .entry _Z18rayanyhit_proctreev(\n\n)\n{\n";
+  s += " .reg .pred %p<2>;\n .reg .f32 %f<6>;\n .reg .f64 %fd<6>;\n .reg .b64 %rd<3>;\n\n\n mov.u64 %rd1, varTexCoord;\n ldu.glo";
+  s += "bal.f32 %f1, [varTexCoord];\n cvt.f64.f32 %fd1, %f1;\n add.s64 %rd2, %rd1, 4;\n ldu.global.f32 %f2, [%rd2];\n cvt.f64.f3";
+  s += "2 %fd2, %f2;\n mul.f64 %fd3, %fd2, 0d406ED0D9E83E425B;\n fma.rn.f64 %fd4, %fd1, 0d4085CBAA30553261, %fd3;\n cvt.rn.f32.f";
+  s += "64 %f3, %fd4;\n cvt.rmi.f32.f32 %f4, %f3;\n sub.f32 %f5, %f3, %f4;\n cvt.f64.f32 %fd5, %f5;\n setp.geu.f64 %p1, %fd5, 0d";
+  s += "3FD3333333333333;\n @%p1 bra BB0_2;\n\n call _rt_ignore_intersection, ();\n \nBB0_2:\n ret;\n}";
+  return s;
+}
+
 inline std::string ptx_program_rayanyhit_tree(){ 
   std::string s;
   s += ".version 5.0\n.target sm_20\n.address_size 64\n\n .global .align 4 .b8 varGeoNormal[12];\n.global .align 4 .b8 varNormal";

@@ -986,5 +986,6 @@
     <CudaCompile Include="rayanyhit.cu" />
     <CudaCompile Include="rayanyhit_tree.cu" />
     <CudaCompile Include="rayhit_emissive.cu" />
+    <CudaCompile Include="rayanyhit_proctree.cu" />
   </ItemGroup>
 </Project>

@@ -36,6 +36,7 @@
 #include <fstream>
 #include <iostream>
 #include <set>
+#include <ShlObj_core.h>
 #include <utility>
 #include <utils/cout_progress.h>
 #include <utils/custom_crash_handler.h>
@@ -48,7 +49,9 @@
 #include <utils/vector_operations.h>
 #include <vector>
 #include <Windows.h>
+#include <utils/binary_reader.h>
 #include <utils/blob.h>
+#include <utils/half.h>
 
 #pragma comment(lib, "Shlwapi.lib")
 #pragma comment(lib, "WinMM.lib")
@@ -700,8 +703,264 @@ struct file_processor
 		return result;
 	}
 
+	static utils::path tmp_dir()
+	{
+		WCHAR result[MAX_PATH] = {};
+		SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, result);
+		return utils::path(result) / "Temp";
+	}
+
+	static void* get_env_data(const std::unordered_map<std::string, std::string>& values)
+	{
+		if (values.empty()) return nullptr;
+
+		auto& env_data = *new std::string;
+		for (const auto& i : values)
+		{
+			env_data += i.first;
+			env_data.push_back('=');
+			env_data += i.second;
+			env_data.push_back('\0');
+		}
+		return (void*)env_data.data();
+	}
+
+	static utils::path find_ac_root_path(const utils::path& input_file)
+	{
+		for (auto parent = input_file.parent_path(); !parent.empty() && parent.string().size() > 4; parent = parent.parent_path())
+		{
+			if (exists(parent / "acs.exe"))
+			{
+				return parent;
+			}
+		}
+		return "";
+	}
+
+	struct tree_to_bake
+	{
+		Vec3 pos;
+		Vec2 half_size;
+	};
+
+	std::vector<tree_to_bake> trees;
+	uint64_t trees_key;
+
+	static void set_race_ini(const std::string& track_id, const std::string& layout_id)
+	{
+		auto data = std::string(R"([BENCHMARK]
+ACTIVE=0
+
+[REPLAY]
+ACTIVE=0
+
+[REMOTE]
+ACTIVE=0
+
+[RESTART]
+ACTIVE=0
+
+[HEADER]
+VERSION=2
+
+[LAP_INVALIDATOR]
+ALLOWED_TYRES_OUT=-1
+
+[RACE]
+MODEL=abarth500
+MODEL_CONFIG=
+SKIN=0_white_scorpion
+TRACK={TRACK}
+CONFIG_TRACK={TRACK_LAYOUT}
+AI_LEVEL=100
+CARS=1
+DRIFT_MODE=0
+FIXED_SETUP=0
+PENALTIES=0
+JUMP_START_PENALTY=0
+
+[CAR_0]
+SETUP=
+SKIN=0_white_scorpion
+MODEL=-
+MODEL_CONFIG=
+BALLAST=0
+RESTRICTOR=0
+DRIVER_NAME=Player
+NATIONALITY=Canada
+NATION_CODE=CAN
+
+[OPTIONS]
+USE_MPH=0
+
+[GHOST_CAR]
+RECORDING=0
+PLAYING=0
+LOAD=0
+FILE=
+ENABLED=0
+
+[GROOVE]
+VIRTUAL_LAPS=10
+MAX_LAPS=30
+STARTING_LAPS=0
+
+[SESSION_0]
+NAME=Practice
+TYPE=1
+DURATION_MINUTES=0
+SPAWN_SET=HOTLAP_START
+
+[TEMPERATURE]
+AMBIENT=10
+ROAD=9
+
+[LIGHTING]
+SUN_ANGLE=-12.11
+TIME_MULT=0.0
+CLOUD_SPEED=0.200
+
+[WEATHER]
+NAME=0_clear
+
+[WIND]
+SPEED_KMH_MIN=0
+SPEED_KMH_MAX=0
+DIRECTION_DEG=1
+
+[DYNAMIC_TRACK]
+SESSION_START=100
+RANDOMNESS=1
+LAP_GAIN=30
+SESSION_TRANSFER=50)");
+		std_ext::replace(data, "{TRACK}", track_id.c_str());
+		std_ext::replace(data, "{TRACK_LAYOUT}", layout_id.c_str());
+		WCHAR result[MAX_PATH] = {};
+		SHGetFolderPathW(nullptr, CSIDL_PERSONAL, nullptr, SHGFP_TYPE_CURRENT, result);
+		write_file((utils::path(result) / "Assetto Corsa/cfg/race_vao.ini").wstring(), data);
+	}
+
+	static bool run_ac(const utils::path& ac_root, const wchar_t* key, const utils::path& output_file)
+	{
+		if (exists(output_file))
+		{
+			_unlink(output_file.string().c_str());
+		}
+
+		STARTUPINFO start_info{};
+		start_info.cb = sizeof(STARTUPINFO);
+
+		SetEnvironmentVariableW(L"AC_TOOL_RUN", L"1");
+		SetEnvironmentVariableW(L"AC_CFG_RACE_INI", L"race_vao.ini");
+		SetEnvironmentVariableW(key, output_file.wstring().c_str());
+
+		PROCESS_INFORMATION proc_info{};
+		std::wstring args;
+		if (!CreateProcessW((ac_root / "acs.exe").wstring().c_str(), &args[0],
+			nullptr, nullptr, TRUE, 0, nullptr,
+			ac_root.wstring().c_str(), &start_info, &proc_info))
+		{
+			throw std::runtime_error("Failed to start AC process");
+		}
+
+		WaitForSingleObject(proc_info.hProcess, INFINITE);
+		SetEnvironmentVariableW(key, nullptr);
+		return exists(output_file);
+	}
+
 	void run()
 	{
+		const auto ac_root = find_ac_root_path(input_file);
+
+		// Procedural trees
+		if ((FEATURE_ACTIVE("PROCEDURAL_TREES_OCCLUDE") || FEATURE_ACTIVE("PROCEDURAL_TREES_BAKE")) && !ac_root.empty())
+		{
+			const auto track_id = input_file.parent_path().filename().string();
+			std::string track_layout;
+			if (input_file.extension() == ".ini")
+			{
+				track_layout = input_file.filename_without_extension().string();
+				if (strncmp(track_layout.c_str(), "models_", 7) == 0) track_layout = track_layout.substr(7);
+				else track_layout.clear();
+			}
+			else
+			{
+				const auto list = list_files(input_file.parent_path(), "models_*.ini");
+				if (!list.empty())
+				{
+					track_layout = list[0].filename_without_extension().string().substr(7);
+				}
+			}
+			std::cout << "Track ID: " << track_id << ", layout: " << (track_layout.empty() ? "<none>" : track_layout) << std::endl;
+			set_race_ini(track_id, track_layout);
+
+			PERF("Running AC in background to get list of procedural trees ready");
+			const auto tmp_path = tmp_dir() / "ac_trees.bin";
+			if (!run_ac(ac_root, L"AC_PREPARE_TREES_LIST", tmp_path))
+			{
+				throw std::runtime_error("Failed to extract the list of procedural trees");
+			}
+
+			std::vector<MeshVertex> vertices;
+			std::vector<Triangle> triangles;
+			auto add_quad = [&](const Vec3& p, const Vec3& l, const Vec3& t)
+			{
+				const auto i = uint32_t(vertices.size());
+				vertices.push_back({p - l - t, {0.f, 0.f}});
+				vertices.push_back({p - l + t, {0.f, 1.f}});
+				vertices.push_back({p + l + t, {1.f, 1.f}});
+				vertices.push_back({p + l - t, {1.f, 0.f}});
+				triangles.push_back({i, i + 1, i + 2});
+				triangles.push_back({i, i + 2, i + 3});
+				triangles.push_back({i, i + 2, i + 1});
+				triangles.push_back({i, i + 3, i + 2});
+			};
+
+			utils::binary_reader trees_reader(tmp_path);
+			if (trees_reader.read_uint() != 1U)
+			{
+				throw std::runtime_error("Failed to get the list of procedural trees: unsupported version (bakery needs an update)");
+			}
+
+			trees_key = trees_reader.read_uint64();
+			for (auto i = trees_reader.read_uint(); i > 0; --i)
+			{
+				auto pos = trees_reader.read_f3();
+				auto hsize = trees_reader.read_f2();
+				trees.emplace_back(tree_to_bake{Vec3{pos.x, pos.y, pos.z}, Vec2{hsize.x, hsize.y}});
+				const auto mult = std::max(std::min(hsize.y * 1.8f - 0.2f, 1.f), 0.f);
+				if (mult > 0.f)
+				{
+					hsize.x *= 0.7f * mult;
+					add_quad(Vec3{pos.x, pos.y - hsize.y * 0.5f, pos.z}, Vec3{hsize.x * 0.65f, 0.f, 0.f}, Vec3{0.f, 0.f, hsize.x * 0.65f});
+					add_quad(Vec3{pos.x, pos.y + hsize.y * 0.5f, pos.z}, Vec3{hsize.x * 0.65f, 0.f, 0.f}, Vec3{0.f, 0.f, hsize.x * 0.65f});
+					add_quad(Vec3{pos.x, pos.y, pos.z}, Vec3{hsize.x, 0.f, 0.f}, Vec3{0.f, 0.f, hsize.x});
+					add_quad(Vec3{pos.x, pos.y, pos.z}, Vec3{hsize.x * 0.9f, 0.f, 0.f}, Vec3{0.f, hsize.y * 0.7f, 0.f});
+					add_quad(Vec3{pos.x, pos.y, pos.z}, Vec3{0.f, 0.f, hsize.x * 0.9f}, Vec3{0.f, hsize.y * 0.7f, 0.f});
+				}
+			}
+
+			if (FEATURE_ACTIVE("PROCEDURAL_TREES_OCCLUDE") && !vertices.empty())
+			{
+				auto mesh = std::make_shared<bake::Mesh>();
+				mesh->name = "trees";
+				mesh->matrix = NodeTransformation::identity();
+				mesh->cast_shadows = true;
+				mesh->is_visible = true;
+				mesh->is_transparent = false;
+				mesh->vertices = std::move(vertices);
+				mesh->triangles = std::move(triangles);
+				mesh->layer = 0;
+				mesh->lod_in = 0.f;
+				mesh->lod_out = FLT_MAX;
+				mesh->receive_shadows = false;
+				mesh->material = nullptr;
+				mesh->signature_point = mesh->vertices[0].pos;
+				mesh->is_renderable = true;
+				root->add_child(mesh);
+			}
+		}
+
 		// Optional dumping
 		std::string dump_as;
 		if (config.try_get(section, "DUMP_INSTEAD_OF_BAKING", dump_as) && !dump_as.empty())
@@ -734,6 +993,7 @@ struct file_processor
 		}
 
 		// Saving result
+		const auto destination = input_file.parent_path() / resulting_name;
 		{
 			if (!exterior_materials.empty())
 			{
@@ -753,8 +1013,22 @@ struct file_processor
 				cfg_save.extra_config.set("SHADER_REPLACEMENT_0_FIX_DRIVER", "PROP_0", std::vector<std::string>{"ksAmbient", "*" + std::to_string(driver_mult)});
 			}
 
-			const auto destination = input_file.parent_path() / resulting_name;
 			PERF("Saving to `" + destination.relative_ac() + "`");
+			ao.save(destination, cfg_save, FEATURE_ACTIVE("SPLIT_AO"));
+		}
+
+		if (FEATURE_ACTIVE("PROCEDURAL_TREES_FINALIZE"))
+		{
+			{
+				PERF("Running AC in background to compile procedural trees");
+				if (!run_ac(ac_root, L"AC_FINALIZE_TREES_LIST", input_file.parent_path() / "compiled_trees.bin"))
+				{
+					throw std::runtime_error("Failed to compile the list of procedural trees");
+				}
+			}
+
+			PERF("Resaving to `" + destination.relative_ac() + "` without trees AO");
+			ao.extra_entries.erase("TreeSamples.data");
 			ao.save(destination, cfg_save, FEATURE_ACTIVE("SPLIT_AO"));
 		}
 	}
@@ -1034,7 +1308,7 @@ struct file_processor
 		ao.extend(extra_ao);
 	}
 
-	uint64_t vec3_key(const Vec3& p)
+	static uint64_t vec3_key(const Vec3& p)
 	{
 		const auto c = [](float v) -> uint64_t
 		{
@@ -1047,7 +1321,7 @@ struct file_processor
 		return r;
 	}
 
-	bool is_physics_surface(const std::string& name)
+	static bool is_physics_surface(const std::string& name)
 	{
 		auto any = false;
 		for (const auto& c : name)
@@ -1058,13 +1332,13 @@ struct file_processor
 			}
 			else
 			{
-				return any && isalpha(c) && (memcmp(&c, "WALL", 4) != 0 || isalpha((&c)[4]));
+				return any && isalpha(c) && (strncmp(&c, "WALL", 4) != 0 || isalpha((&c)[4]));
 			}
 		}
 		return false;
 	}
 
-	void write_file(const std::wstring& filename, const std::string& data)
+	static void write_file(const std::wstring& filename, const std::string& data)
 	{
 		auto s = std::ofstream(filename, std::ios::binary);
 		std::copy(data.begin(), data.end(), std::ostream_iterator<char>(s));
@@ -1376,6 +1650,92 @@ struct file_processor
 		}
 	}
 
+	#define M_PI 3.14159265358979323846f
+	#define AXIS_SAMPLE_COUNT 8
+
+	static Vec4 sh_evaluate(const Vec3& dir)
+	{
+		Vec4 result;
+		result.x = 0.28209479177387814347403972578039f;
+		result.y = -0.48860251190291992158638462283836f * dir.y;
+		result.z = 0.48860251190291992158638462283836f * dir.z;
+		result.w = -0.48860251190291992158638462283836f * dir.x;
+		return result;
+	}
+
+	static Vec3 sh_get_uniform_sphere_sample(float azimuth_x, float zenith_y)
+	{
+		const float phi = 2.f * M_PI * azimuth_x;
+		const float z = 1.f - 2.f * zenith_y;
+		const float r = sqrt(std::max(0.f, 1.f - z * z));
+		return Vec3{r * cos(phi), z, r * sin(phi)};
+	}
+
+	void bake_procedural_trees(baked_data& ao, const std::shared_ptr<Node>& root, const std::vector<tree_to_bake>& trees, uint64_t trees_key)
+	{
+		std::cout << "Baking procedural trees:" << std::endl;
+		const auto extra_scene = std::make_shared<Scene>(root);
+
+		{
+			PERF("\tGenerating samples")
+			extra_scene->extra_receive_directed_points.reserve(trees.size() * (AXIS_SAMPLE_COUNT * AXIS_SAMPLE_COUNT));
+			for (const auto& p : trees)
+			{
+				for (float az = 0.5f; az < AXIS_SAMPLE_COUNT; az += 1.0f)
+				{
+					for (float ze = 0.5f; ze < AXIS_SAMPLE_COUNT; ze += 1.0f)
+					{
+						auto dir = sh_get_uniform_sphere_sample(az / AXIS_SAMPLE_COUNT, ze / AXIS_SAMPLE_COUNT);
+						dir.y = dir.y * 0.45f + 0.55f;
+						dir = dir.normalize();
+						extra_scene->extra_receive_directed_points.emplace_back(p.pos + Vec3{dir.x * p.half_size.x, p.half_size.y * dir.y, dir.z * p.half_size.x}, dir);
+					}
+				}
+			}
+		}
+
+		auto cfg_extra_ao = cfg_bake;
+		cfg_extra_ao.num_rays = 8;
+		cfg_extra_ao.bounce_counts = 2;
+		cfg_extra_ao.disable_normals = true;
+		cfg_extra_ao.sample_on_points = true;
+		cfg_extra_ao.use_ground_plane_blocker = false;
+		cfg_extra_ao.filter_mode = VERTEX_FILTER_AREA_BASED;
+		cfg_extra_ao.sample_offset = {0.f, 0.f, 0.f};
+
+		std::cout << "\tTotal number of AO tree samples: " << extra_scene->extra_receive_directed_points.size() << std::endl;
+		std::vector<float> baked;
+		{
+			PERF("\tActual baking")
+			baked = std::move(bake_scene(extra_scene, cfg_extra_ao).extra_points_ao);
+		}
+
+		utils::blob data;
+		data << 1U;
+		data << trees_key;
+		auto i = 0;
+		for (const auto& p : trees)
+		{
+			Vec4 sh{};
+			for (float az = 0.5f; az < AXIS_SAMPLE_COUNT; az += 1.f)
+			{
+				for (float ze = 0.5f; ze < AXIS_SAMPLE_COUNT; ze += 1.f)
+				{
+					const auto dir = sh_get_uniform_sphere_sample(az / AXIS_SAMPLE_COUNT, ze / AXIS_SAMPLE_COUNT);
+					sh = sh + sh_evaluate(dir) * baked[i++];
+				}
+			}
+			sh = sh * (4.f * M_PI / (AXIS_SAMPLE_COUNT * AXIS_SAMPLE_COUNT) * 0.2821f);
+			const auto mult = std::max(std::min(p.half_size.y * 1.8f - 0.2f, 1.f), 0.f);
+			data << p.pos.x;
+			data << math::half(sh.x);
+			data << math::half(mult * sh.y);
+			data << math::half(mult * sh.z);
+			data << math::half(mult * sh.w);
+		}
+		ao.extra_entries["TreeSamples.data"] = std::move(data);
+	}
+
 	baked_data bake_stuff(const std::shared_ptr<Node>& root)
 	{
 		// A quick check beforehand
@@ -1403,7 +1763,7 @@ struct file_processor
 		{
 			const auto dark_ao_threshold = config.get(section, "DARK_AO_THRESHOLD", 0.01f);
 			const auto dark_vertices_share_threshold = config.get(section, "DARK_VERTICES_SHARE_THRESHOLD", 0.2f);
-			
+
 			std::vector<std::shared_ptr<Mesh>> receivers;
 			for (const auto& p : ao.entries)
 			{
@@ -1490,6 +1850,12 @@ struct file_processor
 
 		// Generating AO for AI lane
 		bake_extra_samples(ao, root);
+
+		// Generating AO for procedural trees
+		if (!trees.empty() && FEATURE_ACTIVE("PROCEDURAL_TREES_BAKE"))
+		{
+			bake_procedural_trees(ao, root, trees, trees_key);
+		}
 
 		// Generating AO for driver
 		if (FEATURE_ACTIVE("DRIVER_RECEIVES_SHADOWS") && driver_root)

@@ -137,7 +137,8 @@ static void destroy_ao_samples(bake::AOSamples& ao_samples)
 	ao_samples.num_samples = 0;
 }
 
-baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene, const std::vector<std::shared_ptr<bake::Mesh>>& blockers,
+baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene, 
+	const std::vector<std::shared_ptr<bake::Mesh>>& blockers, 
 	const bake_params& config, bool verbose)
 {
 	#undef PERF
@@ -172,6 +173,24 @@ baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene, cons
 					sample_positions[sample_index] = {p.x + config.sample_offset.x, p.y + config.sample_offset.y, p.z + config.sample_offset.z};
 					sample_norms[sample_index] = {0.f, 1.f, 0.f};
 					sample_face_norms[sample_index] = {0.f, 1.f, 0.f};
+					sample_index++;
+				}
+			}
+			else if (!scene->extra_receive_directed_points.empty())
+			{
+				total_samples = scene->extra_receive_directed_points.size();
+				allocate_ao_samples(ao_samples, total_samples);
+				ao_samples.align_rays = 4.f;
+
+				auto sample_index = 0;
+				const auto sample_positions = reinterpret_cast<bake::Vec3*>(ao_samples.sample_positions);
+				const auto sample_norms = reinterpret_cast<bake::Vec3*>(ao_samples.sample_normals);
+				const auto sample_face_norms = reinterpret_cast<bake::Vec3*>(ao_samples.sample_face_normals);
+				for (const auto& p : scene->extra_receive_directed_points)
+				{
+					sample_positions[sample_index] = {p.first.x + config.sample_offset.x, p.first.y + config.sample_offset.y, p.first.z + config.sample_offset.z};
+					sample_norms[sample_index] = p.second;
+					sample_face_norms[sample_index] = p.second;
 					sample_index++;
 				}
 			}
@@ -255,6 +274,14 @@ baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene, cons
 		{
 			result.extra_points_ao.resize(scene->extra_receive_points.size());
 			for (auto i = 0U; i < scene->extra_receive_points.size(); ++i)
+			{
+				result.extra_points_ao[i] = ao_values[i];
+			}
+		}
+		else if (!scene->extra_receive_directed_points.empty())
+		{
+			result.extra_points_ao.resize(scene->extra_receive_directed_points.size());
+			for (auto i = 0U; i < scene->extra_receive_directed_points.size(); ++i)
 			{
 				result.extra_points_ao[i] = ao_values[i];
 			}

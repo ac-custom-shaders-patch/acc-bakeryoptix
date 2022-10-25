@@ -32,6 +32,7 @@
 #include <vector>
 #include <array>
 #include <memory>
+#include <vector_types.h>
 #include <utils/std_ext.h>
 
 // ReSharper disable once CppUnusedIncludeDirective
@@ -135,11 +136,22 @@ namespace bake
 	struct Vec3
 	{
 		float x, y, z;
+
+		Vec3 operator *(float v) const { return {x * v, y * v, z * v}; }
+		Vec3 operator +(const Vec3& v) const { return {x + v.x, y + v.y, z + v.z}; }
+		Vec3 operator -(const Vec3& v) const { return {x - v.x, y - v.y, z - v.z}; }
+		float operator &(const Vec3& v) const { return x * v.x + y * v.y + z * v.z; }
+		Vec3 normalize() { return *this * (1.f / sqrtf(*this & *this)); }
 	};
 
 	struct Vec4
 	{
 		float x, y, z, w;
+
+		Vec4 operator *(float v) const { return {x * v, y * v, z * v, w * v}; }
+		Vec4 operator +(const Vec4& v) const { return {x + v.x, y + v.y, z + v.z, w + v.w}; }
+		Vec4 operator -(const Vec4& v) const { return {x - v.x, y - v.y, z - v.z, w - v.w}; }
+		Vec4 operator &(const Vec4& v) const { return {x * v.x, y * v.y, z * v.z, w * v.w}; }
 	};
 
 	struct __declspec(align(4)) MeshVertex
@@ -274,9 +286,10 @@ namespace bake
 		Scene(const std::shared_ptr<Node>& root);
 		Scene(const std::vector<std::shared_ptr<Node>>& nodes);
 		Scene(std::vector<std::shared_ptr<Mesh>> receivers, SceneBlockers blockers);
-		
+
 		std::vector<std::shared_ptr<Mesh>> receivers;
 		std::vector<Vec3> extra_receive_points;
+		std::vector<std::pair<Vec3, Vec3>> extra_receive_directed_points;
 		SceneBlockers blockers;
 
 		float bbox_min[3]{FLT_MAX, FLT_MAX, FLT_MAX};
@@ -311,6 +324,7 @@ namespace bake
 		float* sample_normals;
 		float* sample_face_normals;
 		SampleInfo* sample_infos;
+		float align_rays{};
 	};
 
 	enum VertexFilterMode

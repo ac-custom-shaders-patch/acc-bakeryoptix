@@ -46,6 +46,7 @@ struct bake_params {
 
 struct bake_wrap final
 {
-	static baked_data bake_scene(const std::shared_ptr<bake::Scene>& scene, const std::vector<std::shared_ptr<bake::Mesh>>& blockers, 
+	static baked_data bake_scene(const std::shared_ptr<bake::Scene>& scene, 
+		const std::vector<std::shared_ptr<bake::Mesh>>& blockers,
 		const bake_params& config, bool verbose = false);
 };

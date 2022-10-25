@@ -26,15 +26,16 @@
  */
 
 #include <cassert>
+#include <vector_types.h>
 #include <optixu/optixu_matrix_namespace.h>
 
-#include <utils/load_util.h>
-#include <utils/vector_operations.h>
 #include <bake_api.h>
 #include <bake_filter.h>
 #include <bake_filter_least_squares.h>
-#include <assert.h>
 #include <iostream>
+
+#include <utils/load_util.h>
+#include <utils/vector_operations.h>
 
 using namespace optix;
 using namespace bake;
