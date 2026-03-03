@@ -2,6 +2,7 @@
 #include <D3D11.h>
 #include <dx/d3dx11tex.h>
 #include <dx_shaders.h>
+#include <iostream>
 #include <utils/base64.h>
 #include <utils/filesystem.h>
 
@@ -197,5 +198,15 @@ static struct
 
 dds_loader::dds_loader(const char* data, size_t size)
 {
-	this->data = dds_loader_data.load_data(data, size, width, height);
+	try
+	{
+		this->data = dds_loader_data.load_data(data, size, width, height);
+	} 
+	catch (std::exception& e)
+	{
+		std::cerr << "Failed to load a texture\n";
+		width = 1u;
+		height = 1u;
+		this->data = nullptr;
+	}
 }
