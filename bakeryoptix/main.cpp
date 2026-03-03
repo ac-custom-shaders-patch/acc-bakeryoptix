@@ -1806,8 +1806,10 @@ SESSION_TRANSFER=50)");
 
 			if (!receivers.empty())
 			{
-				std::cout << "Rebaking " << receivers.size() << " dark " << (receivers.size() > 1 ? "objects:\n" : "object:\n");
+				std::cout << "Rebaking " << receivers.size() << " dark " << (receivers.size() > 1 ? "meshes:\n" : "mesh:\n");
 				auto scene_r = std::make_shared<Scene>(std::move(receivers), root_scene->blockers);
+				memcpy(scene_r->bbox_min, root_scene->bbox_min, sizeof(float) * 3);
+				memcpy(scene_r->bbox_max, root_scene->bbox_max, sizeof(float) * 3);
 				auto cfg_bake_dark = cfg_bake;
 				cfg_bake_dark.num_rays = config.get(section, "DARK_RAYS_PER_SAMPLE", cfg_bake_dark.num_rays);
 				cfg_bake_dark.min_samples_per_face = config.get(section, "DARK_MIN_SAMPLES_PER_FACE", cfg_bake_dark.min_samples_per_face);

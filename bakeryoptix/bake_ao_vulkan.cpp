@@ -29,7 +29,6 @@
 // Link vulkan-1.lib (delay-loaded so the app still starts without Vulkan runtime)
 #pragma comment(lib, "vulkan-1.lib")
 #pragma comment(lib, "delayimp.lib")
-#pragma comment(linker, "/DELAYLOAD:vulkan-1.dll")
 
 using namespace bake;
 
@@ -661,7 +660,7 @@ void bake::ao_vulkan(const std::vector<Mesh*>& blockers,
 		}
 		else
 		{
-			if (mesh->name == "blocker")      { gi.matType = 0u; gi.albedo = 0.2f; }
+			if (mesh->name == "blocker")      { gi.matType = 0u; gi.albedo = 0.f; }
 			else if (mesh->name == "trees")   { gi.matType = 3u; gi.albedo = 0.2f; } // proc_foliage
 			else if (mesh->name == "emissive"){ gi.matType = 4u; gi.albedo = 1.f; gi.emissive = mesh->lod_out; }
 			else                              { gi.matType = 0u; gi.albedo = albedo; }
