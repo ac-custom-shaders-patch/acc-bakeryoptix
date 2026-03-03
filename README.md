@@ -36,7 +36,7 @@ A tool to bake vertex ambient occlusion for racing simulator Assetto Corsa with 
 ## Tips
 
 - Various options could be changed in `baked_shadow_params.ini`;
-- Should work on all sorts of hardware: Vulcan RT requires a modern GPU to work, but Embree isn’t that slow either.
+- GPU baking requires NVIDIA RTX 20…, AMD RX 6000, Intel Arc A-Series or newer, but if it’s not available, Embree should be pretty fast as well.
 
 ## Credits
 
