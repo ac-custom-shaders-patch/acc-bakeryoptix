@@ -351,3 +351,4 @@ MigrationBackup/
 # No need for that
 *.dmp
 bakeryoptix/embree3
+bake-cars.jsh
