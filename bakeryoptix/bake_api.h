@@ -59,11 +59,13 @@ namespace bake
 		static NodeTransformation identity();
 	};
 
+	struct Node;
+
 	struct NodeBase
 	{
 		std::string name;
 		NodeTransformation matrix = NodeTransformation::identity();
-		NodeBase* parent{};
+		Node* parent{};
 		bool active = true;
 		bool active_local = true;
 		virtual ~NodeBase() = default;
@@ -138,7 +140,8 @@ namespace bake
 		float x, y, z;
 
 		Vec3 operator *(float v) const { return {x * v, y * v, z * v}; }
-		Vec3 operator +(const Vec3& v) const { return {x + v.x, y + v.y, z + v.z}; }
+		Vec3 operator +(const Vec3& v) const { return { x + v.x, y + v.y, z + v.z }; }
+		Vec3 operator *(const Vec3& v) const { return { x * v.x, y * v.y, z * v.z }; }
 		Vec3 operator -(const Vec3& v) const { return {x - v.x, y - v.y, z - v.z}; }
 		float operator &(const Vec3& v) const { return x * v.x + y * v.y + z * v.z; }
 		Vec3 normalize() { return *this * (1.f / sqrtf(*this & *this)); }
@@ -154,71 +157,10 @@ namespace bake
 		Vec4 operator &(const Vec4& v) const { return {x * v.x, y * v.y, z * v.z, w * v.w}; }
 	};
 
-	struct __declspec(align(4)) MeshVertex
-	{
-		Vec3 pos;
-		Vec2 tex;
-		float _pad;
-		MeshVertex() : pos{}, tex{}, _pad(0.f) { }
-		MeshVertex(Vec3 p, Vec2 t) : pos(p), tex(t), _pad(0.f) { }
-	};
-
-	struct Mesh : NodeBase
-	{
-		Vec3 signature_point;
-		float extra_samples_offset{};
-		std::vector<MeshVertex> vertices;
-		std::vector<Vec3> normals;
-		std::vector<Triangle> triangles;
-		std::shared_ptr<Material> material;
-		float lod_in{};
-		float lod_out{};
-		int layer = 0;
-		bool cast_shadows = true;
-		bool receive_shadows = true;
-		bool is_visible = true;
-		bool is_renderable = true;
-		bool is_transparent = false;
-
-		void update_matrix() override
-		{
-			matrix = parent->matrix;
-			active = parent->active && active_local;
-		}
-
-		bool matches(const std::string& query) const;
-	};
-
-	struct Node;
-
-	struct Bone
-	{
-		std::string name;
-		NodeTransformation tranform = NodeTransformation::identity();
-		std::shared_ptr<Node> node{};
-
-		Bone() { }
-
-		Bone(std::string name, const NodeTransformation& matrix = NodeTransformation::identity())
-			: name(std::move(name)), tranform(matrix) { }
-
-		void solve(const std::shared_ptr<Node>& root);
-	};
-
-	struct SkinnedMesh : Mesh
-	{
-		std::vector<Bone> bones;
-		std::vector<Vec4> weights;
-		std::vector<Vec4> bone_ids;
-		std::vector<MeshVertex> vertices_orig;
-		std::vector<Vec3> normals_orig;
-		void resolve(const Node* node);
-	};
-
 	struct Filter
 	{
 		std::vector<std::string> items;
-		explicit Filter(std::vector<std::string> items) : items(std::move(items)) { }
+		explicit Filter(std::vector<std::string> items) : items(std::move(items)) {}
 	};
 
 	struct Node : NodeBase
@@ -250,6 +192,67 @@ namespace bake
 
 	private:
 		void resolve_skinned(const Node* root);
+	};
+
+	struct __declspec(align(4)) MeshVertex
+	{
+		Vec3 pos;
+		Vec2 tex;
+		float _pad;
+		MeshVertex() : pos{}, tex{}, _pad(0.f) {}
+		MeshVertex(Vec3 p, Vec2 t) : pos(p), tex(t), _pad(0.f) {}
+	};
+
+	struct Mesh : NodeBase
+	{
+		Vec3 signature_point;
+		float extra_samples_offset{};
+		std::vector<MeshVertex> vertices;
+		std::vector<Vec3> normals;
+		std::vector<Triangle> triangles;
+		std::shared_ptr<Material> material;
+		float lod_in{};
+		float lod_out{};
+		float albedo_override = -1.f;
+		int layer = 0;
+		bool cast_shadows = true;
+		bool receive_shadows = true;
+		bool is_visible = true;
+		bool is_renderable = true;
+		bool is_transparent = false;
+
+		void update_matrix() override
+		{
+			matrix = parent->matrix;
+			active = parent->active && active_local;
+		}
+
+		bool matches(const std::string& query) const;
+	};
+
+	struct Bone
+	{
+		std::string name;
+		NodeTransformation tranform = NodeTransformation::identity();
+		std::shared_ptr<Node> node{};
+
+		Bone() {}
+
+		Bone(std::string name, const NodeTransformation& matrix = NodeTransformation::identity())
+			: name(std::move(name)), tranform(matrix)
+		{}
+
+		void solve(const std::shared_ptr<Node>& root);
+	};
+
+	struct SkinnedMesh : Mesh
+	{
+		std::vector<Bone> bones;
+		std::vector<Vec4> weights;
+		std::vector<Vec4> bone_ids;
+		std::vector<MeshVertex> vertices_orig;
+		std::vector<Vec3> normals_orig;
+		void resolve(const Node* node);
 	};
 
 	struct NodeTransition

@@ -8,6 +8,7 @@
 #include <bake_ao_embree.h>
 #include <bake_api.h>
 #include <bake_sample.h>
+#include <export_obj.h>
 
 inline void set_vertex_entry(float* vertices, const int idx, const int axis, float* vec)
 {
@@ -20,7 +21,7 @@ inline void set_vertex_value(float* vertices, const int idx, const int axis, flo
 }
 
 static void make_ground_plane(const float scene_bbox_min[3], const float scene_bbox_max[3], int upaxis, const float scale_factor,
-							  const float offset_factor, std::vector<bake::Mesh*>& meshes, bake::Scene& scene)
+							  const float offset_factor, const float albedo, std::vector<bake::Mesh*>& meshes, bake::Scene& scene)
 {
 	auto plane_mesh = new bake::Mesh();
 	plane_mesh->name = "blocker";
@@ -88,12 +89,13 @@ static void make_ground_plane(const float scene_bbox_min[3], const float scene_b
 	}
 
 	plane_mesh->matrix = bake::NodeTransformation::identity();
+	plane_mesh->albedo_override = albedo;
 	expand_bbox(scene.bbox_min, scene.bbox_max, ground_min);
 	expand_bbox(scene.bbox_min, scene.bbox_max, ground_max);
 	meshes.push_back(plane_mesh);
 }
 
-static void make_enclosure(const float scene_bbox_min[3], const float scene_bbox_max[3], const float margin, std::vector<bake::Mesh*>& meshes, bake::Scene& scene)
+static void make_enclosure(const float scene_bbox_min[3], const float scene_bbox_max[3], const float margin, const float albedo, std::vector<bake::Mesh*>& meshes, bake::Scene& scene)
 {
 	auto plane_mesh = new bake::Mesh();
 	plane_mesh->name = "blocker";
@@ -121,7 +123,7 @@ static void make_enclosure(const float scene_bbox_min[3], const float scene_bbox
 	float bbox_min[3] = { plane_mesh->vertices[4].pos.x, plane_mesh->vertices[4].pos.y, plane_mesh->vertices[4].pos.z };
 	expand_bbox(scene.bbox_min, scene.bbox_max, bbox_max);
 	expand_bbox(scene.bbox_min, scene.bbox_max, bbox_min);
-	std::cout << "<ENCLOSURE SET>";
+	plane_mesh->albedo_override = albedo;
 	meshes.push_back(plane_mesh);
 }
 
@@ -278,13 +280,30 @@ baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene,
 
 		if (config.use_ground_plane_blocker)
 		{
-			make_enclosure(scene->bbox_min, scene->bbox_max, 10.f, blocker_meshes, *scene);
-			// make_ground_plane(scene->bbox_min, scene->bbox_max, config.ground_upaxis, config.ground_scale_factor, config.ground_offset_factor, blocker_meshes, *scene);
+			make_ground_plane(scene->bbox_min, scene->bbox_max, config.ground_upaxis, 
+							  config.ground_scale_factor, config.ground_offset_factor, config.ground_albedo,
+							  blocker_meshes, *scene);
+		}
+
+		if (config.use_enclosing_blocker)
+		{
+			make_enclosure(scene->bbox_min, scene->bbox_max, config.enclosing_blocker_margin, config.enclosing_blocker_albedo,
+						   blocker_meshes, *scene);
 		}
 
 		for (const auto& c : config.light_emitters)
 		{
 			make_emissive_plane(c, blocker_meshes);
+		}
+
+		if (config.export_blockers_as_obj)
+		{
+			static bool exported;
+			if (!exported)
+			{
+				exported = true;
+				export_blockers_obj(blocker_meshes, "blockers_export.obj");
+			}
 		}
 
 		if (bake::vulkan_available())

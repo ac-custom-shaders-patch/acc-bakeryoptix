@@ -21,10 +21,15 @@ struct bake_params {
 	bool sample_on_points;
 	bake::Vec3 sample_offset;
 
+	bool export_blockers_as_obj;
+	bool use_enclosing_blocker;
+	float enclosing_blocker_margin;
+	float enclosing_blocker_albedo = -1.f;
 	bool use_ground_plane_blocker;
 	int ground_upaxis;
 	float ground_scale_factor;
 	float ground_offset_factor;
+	float ground_albedo = -1.f;
 
 	int num_rays;
 	int bounce_counts;

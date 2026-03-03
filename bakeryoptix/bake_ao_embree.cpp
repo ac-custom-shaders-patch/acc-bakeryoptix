@@ -233,7 +233,17 @@ void bake::ao_embree(const std::vector<Mesh*>& blockers,
 			info.mat_type = MaterialType::opaque;
 			info.albedo = albedo;
 		}
-		else
+		else if (mesh->albedo_override >= 0.f)
+		{
+			info.albedo = mesh->albedo_override;
+			if (info.albedo >= 1.f)
+			{
+				info.mat_type = MaterialType::emissive;
+				info.emissive = info.albedo;
+				info.albedo = 1.f;
+			}
+		}
+		else 
 		{
 			if (mesh->name == "blocker")
 			{

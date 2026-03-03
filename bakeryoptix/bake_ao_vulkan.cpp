@@ -658,6 +658,17 @@ void bake::ao_vulkan(const std::vector<Mesh*>& blockers,
 		{
 			gi.matType = 0u; // opaque
 		}
+		else if (mesh->albedo_override >= 0.f)
+		{
+			gi.matType = 0u; // opaque
+			gi.albedo = mesh->albedo_override;
+			if (gi.albedo >= 1.f)
+			{
+				gi.matType = 4u;
+				gi.emissive = gi.albedo;
+				gi.albedo = 1.f;
+			}
+		}
 		else
 		{
 			if (mesh->name == "blocker")      { gi.matType = 0u; gi.albedo = 0.f; }

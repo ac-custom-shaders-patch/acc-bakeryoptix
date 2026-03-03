@@ -415,8 +415,13 @@ struct file_processor
 		cfg_bake.scene_offset_scale_horizontal = config.get(section, "RAYS_OFFSET", 0.1f);
 		cfg_bake.scene_offset_scale_vertical = cfg_bake.scene_offset_scale_horizontal;
 		cfg_bake.trees_light_pass_chance = config.get(section, "TREES_LIGHT_PASS_CHANCE", 0.9f);
+		cfg_bake.export_blockers_as_obj = config.get(section, "EXPORT_BLOCKERS_AS_OBJ", false);
+		cfg_bake.use_enclosing_blocker = config.get(section, "USE_ENCLOSING_BLOCKER", false);
+		cfg_bake.enclosing_blocker_margin = config.get(section, "ENCLOSING_BLOCKER_MARGIN", 0.f);
+		cfg_bake.enclosing_blocker_albedo = config.get(section, "ENCLOSING_BLOCKER_ALBEDO",-1.f);
 		cfg_bake.use_ground_plane_blocker = config.get(section, "USE_GROUND", false);
 		cfg_bake.ground_scale_factor = config.get(section, "GROUND_SCALE", 10.f);
+		cfg_bake.ground_albedo = config.get(section, "GROUND_ALBEDO", -1.f);
 		cfg_bake.scene_albedo = config.get(section, "BASE_ALBEDO", 0.9f);
 		cfg_bake.bounce_counts = config.get(section, "BOUNCES", 5);
 		cfg_bake.ground_upaxis = config.get(section, "GROUND_UP_AXIS", 1);
@@ -443,8 +448,7 @@ struct file_processor
 						Vec3{p2.x, p2.y, p2.z},
 						Vec3{p3.x, p3.y, p3.z},
 					},
-					intensity
-												  });
+					intensity});
 			}
 		}
 
@@ -527,6 +531,62 @@ struct file_processor
 				for (const auto& mesh : root->find_meshes(resolve_filter(names)))
 				{
 					mesh->extra_samples_offset = offset;
+				}
+			}
+		}
+
+		for (auto i = 0; i < 100; i++)
+		{
+			std::vector<std::string> blocker_filenames;
+			if (config.try_get(section, "EXTRA_BLOCKERS_" + std::to_string(i) + "_FILE", blocker_filenames))
+			{
+				for (const auto& blocker_filename_str : blocker_filenames)
+				{
+					const utils::path blocker_filename(blocker_filename_str);
+					PERF("Loading extra blocker `" + blocker_filename.relative_ac() + "`");
+					auto blocker = load_model(input_file, {});
+					for (auto m : blocker->get_meshes())
+					{
+						m->material = nullptr;
+						m->albedo_override = m->name.find("emissive") != std::string::npos ? 1.f : 0.f;
+						root->add_child(m);
+					}
+				}
+			}
+		}
+
+		// Loading tunnel fixes
+		for (auto i = 0; i < 100; i++)
+		{
+			std::vector<std::string> names;
+			std::vector<float> offset;
+			if (config.try_get(section, "TUNNEL_FIX_" + std::to_string(i) + "_NAMES", names)
+				&& config.try_get(section, "TUNNEL_FIX_" + std::to_string(i) + "_OFFSET", offset))
+			{
+				for (const auto& mesh : root->find_meshes(resolve_filter(names)))
+				{
+					if (mesh->vertices.size() != mesh->normals.size())
+					{
+						std::cerr << "Failed to apply tunnel fix: " << mesh->name << "\n";
+						continue;
+					}
+					auto tunnel_fix_mesh = std::make_shared<bake::Mesh>();
+					tunnel_fix_mesh->name = "blocker";
+					tunnel_fix_mesh->receive_shadows = false;
+					tunnel_fix_mesh->cast_shadows = true;
+					tunnel_fix_mesh->vertices.resize(mesh->vertices.size());
+					tunnel_fix_mesh->triangles = mesh->triangles;
+					Vec3 offset_amount;
+					offset_amount.x = offset[0];
+					offset_amount.y = offset[offset.size() == 3 ? 1 : 0];
+					offset_amount.z = offset[offset.size() == 3 ? 2 : 0];
+					for (auto j = 0u; j < mesh->vertices.size(); ++j)
+					{
+						tunnel_fix_mesh->vertices[j] = mesh->vertices[j];
+						tunnel_fix_mesh->vertices[j].pos = tunnel_fix_mesh->vertices[j].pos - mesh->normals[j] * offset_amount;
+					}
+					mesh->parent->add_child(tunnel_fix_mesh);
+					std::cerr << "Tunnel fix: " << mesh->name << "\n";
 				}
 			}
 		}

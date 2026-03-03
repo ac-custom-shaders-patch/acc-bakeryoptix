@@ -168,6 +168,7 @@
     <ClCompile Include="bake_kernels__cpu.cpp" />
     <ClCompile Include="bake_sample.cpp" />
     <ClCompile Include="bake_wrap.cpp" />
+    <ClCompile Include="export_obj.cpp" />
     <ClCompile Include="bc7.cpp" />
     <ClCompile Include="dds\dds_loader.cpp" />
     <ClCompile Include="utils\alphanum.cpp" />
@@ -202,6 +203,7 @@
     <ClInclude Include="bake_sample_internal.h" />
     <ClInclude Include="bake_util.h" />
     <ClInclude Include="bake_wrap.h" />
+    <ClInclude Include="export_obj.h" />
     <ClInclude Include="dds\dds_loader.h" />
     <ClInclude Include="dx_shaders.h" />
     <ClInclude Include="eigen\Eigen\src\Cholesky\LDLT.h" />
