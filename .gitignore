@@ -350,3 +350,4 @@ MigrationBackup/
 
 # No need for that
 *.dmp
+bakeryoptix/embree3

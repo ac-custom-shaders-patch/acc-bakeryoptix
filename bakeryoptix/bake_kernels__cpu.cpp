@@ -1,9 +1,8 @@
-﻿#include "bake_kernels__cpu.h"
+#include "bake_kernels__cpu.h"
 
 #include <bake_kernels.h>
 #include <bake_api.h>
 #include <cuda/random.h>
-#include <optixu/optixu_math_namespace.h>
 
 namespace bake
 {
@@ -58,7 +57,7 @@ namespace bake
 	void generate_rays_host(unsigned seed, int px, int py, int sqrt_passes, float scene_offset, const AOSamples& ao_samples, Ray* rays)
 	{
 		#pragma omp parallel for
-		for (auto i = 0U; i < ao_samples.num_samples; i++)
+		for (ptrdiff_t i = 0; i < static_cast<ptrdiff_t>(ao_samples.num_samples); i++)
 		{
 			generate_rays_kernel(i, seed, px, py, sqrt_passes, scene_offset, (float3*)ao_samples.sample_normals, 
 				(float3*)ao_samples.sample_face_normals, (float3*)ao_samples.sample_positions, rays);
@@ -73,7 +72,7 @@ namespace bake
 	void update_ao_host(size_t num_samples, float max_distance, const float* hits, float* ao)
 	{
 		#pragma omp parallel for
-		for (auto i = 0U; i < num_samples; i++)
+		for (ptrdiff_t i = 0; i < static_cast<ptrdiff_t>(num_samples); i++)
 		{
 			update_ao_kernel(i, max_distance, hits, ao);
 		}

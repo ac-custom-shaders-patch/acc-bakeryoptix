@@ -32,7 +32,7 @@
 #include <vector>
 #include <array>
 #include <memory>
-#include <vector_types.h>
+#include <optix_compat.h>
 #include <utils/std_ext.h>
 
 // ReSharper disable once CppUnusedIncludeDirective

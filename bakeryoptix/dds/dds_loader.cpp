@@ -1,11 +1,29 @@
 #include "dds_loader.h"
 #include <D3D11.h>
-#include <D3DX11tex.h>
+#include <dx/d3dx11tex.h>
 #include <dx_shaders.h>
 #include <utils/base64.h>
 #include <utils/filesystem.h>
+
+#include "utils/blob.h"
 #pragma comment(lib, "d3d11.lib")
-#pragma comment(lib, "d3dx11.lib")
+
+HRESULT create_srv_from(ID3D11Device* device, const utils::blob_view& data, ID3D11ShaderResourceView** ret);
+
+static HRESULT D3DX11CreateShaderResourceViewFromMemory_fn(ID3D11Device* pDevice, LPCVOID pSrcData, SIZE_T SrcDataSize, 
+	D3DX11_IMAGE_LOAD_INFO* pLoadInfo, ID3DX11ThreadPump* pPump, ID3D11ShaderResourceView** ppShaderResourceView, HRESULT* pHResult)
+{
+	if (SUCCEEDED(create_srv_from(pDevice, utils::blob_view((const char*)pSrcData, SrcDataSize), ppShaderResourceView)))
+	{
+		return S_OK;
+	}
+	if (static const auto fn = reinterpret_cast<decltype(&D3DX11CreateShaderResourceViewFromMemory_fn)>(
+		GetProcAddress(LoadLibraryW(L"d3dx11_43.dll"), "D3DX11CreateShaderResourceViewFromMemory")))
+	{
+		return fn(pDevice, pSrcData, SrcDataSize, pLoadInfo, pPump, ppShaderResourceView, pHResult);
+	}
+	_exit(123);
+}
 
 static struct
 {
@@ -60,7 +78,7 @@ static struct
 		{
 			throw std::exception("Failed to load vertex shader");
 		}
-		
+
 		const auto sh_copy_ps_data = utils::base64::decode(dx_shader_copy_ps());
 		if (FAILED(device->CreatePixelShader(sh_copy_ps_data.data(), sh_copy_ps_data.size(), nullptr, &sh_copy_ps)))
 		{
@@ -70,16 +88,16 @@ static struct
 
 	void set_state() const
 	{
-		const float blend_factor[4] = {0.f, 0.f, 0.f, 0.f};
+		const float blend_factor[4] = { 0.f, 0.f, 0.f, 0.f };
 		context->OMSetBlendState(state_blend, blend_factor, 0xffffffff);
 		context->RSSetState(state_cull);
 		context->OMSetDepthStencilState(state_depth, 0);
-		
+
 		context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 		context->IASetInputLayout(nullptr);
 		context->IASetIndexBuffer(nullptr, DXGI_FORMAT(0), 0);
 		context->IASetVertexBuffers(0, 0, nullptr, nullptr, nullptr);
-		
+
 		context->VSSetShader(sh_copy_vs, nullptr, 0U);
 		context->PSSetShader(sh_copy_ps, nullptr, 0U);
 	}
@@ -108,10 +126,10 @@ static struct
 	}
 
 	std::unique_ptr<std::string> load_data(const char* data, size_t size, uint32_t& width, uint32_t& height)
-	{		
+	{
 		ensure_initialized();
 		ID3D11ShaderResourceView* view;
-		if (FAILED(D3DX11CreateShaderResourceViewFromMemory(device, data, size, nullptr, nullptr, &view, nullptr)))
+		if (FAILED(D3DX11CreateShaderResourceViewFromMemory_fn(device, data, size, nullptr, nullptr, &view, nullptr)))
 		{
 			throw std::runtime_error("Failed to load texture");
 		}
@@ -135,20 +153,20 @@ static struct
 		{
 			throw std::runtime_error("Failed to create RT");
 		}
-		
+
 		set_state();
-		D3D11_VIEWPORT viewport{0.f, 0.f, float(width), float(height), 0.f, 1.f};
+		D3D11_VIEWPORT viewport{ 0.f, 0.f, float(width), float(height), 0.f, 1.f };
 		context->RSSetViewports(1, &viewport);
 		context->OMSetRenderTargets(1, &rt, nullptr);
 		context->PSSetShaderResources(0, 1, &view);
 		context->Draw(3, 0);
-		
+
 		context->OMSetRenderTargets(0, nullptr, nullptr);
 		ID3D11ShaderResourceView* view_null{};
 		context->PSSetShaderResources(0, 1, &view_null);
 		view->Release();
 		rt->Release();
-		
+
 		const auto tex_cpu = create_texture(width, height, true);
 		context->CopyResource(tex_cpu, tex_rt);
 		tex_rt->Release();
@@ -168,7 +186,7 @@ static struct
 			memcpy(row_d, row_s, 4 * width);
 		}
 		context->Unmap(tex_cpu, 0);
-		
+
 		//static int i;
 		//D3DX11SaveTextureToFileA(context, tex_cpu, D3DX11_IFF_DDS, ("H:/0/a_" + std::to_string(i++) + ".dds").c_str());
 

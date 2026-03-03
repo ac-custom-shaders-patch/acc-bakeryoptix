@@ -1,13 +1,13 @@
-﻿#include "load_util.h"
+#include "load_util.h"
 
 #include <fstream>
 #include <functional>
 
 #include "../bake_api.h"
 
-#include <vector_types.h>
-#include <optixu/optixu_math_namespace.h>
+#include <optix_compat.h>
 
+#include <algorithm>
 #include <iostream>
 #include <utils/binary_reader.h>
 #include <utils/ini_file.h>
@@ -622,7 +622,7 @@ void replacement_optimization(const utils::path& track_dir)
 			auto file = models_ini.get(s, "FILE", std::string());
 			if (!file.empty())
 			{
-				max_value = max(max_value, ++models[file]);
+				max_value = std::max(max_value, ++models[file]);
 			}
 		}
 	}

@@ -33,11 +33,9 @@
 
 #include <bake_api.h>
 #include <bake_filter_least_squares.h>
-#include <bake_util.h>
-
 #include <cassert>
 #include <vector>
-#include <optixu/optixu_math_namespace.h>
+#include <optix_compat.h>
 
 #include <eigen/Core>
 #include <eigen/Geometry>

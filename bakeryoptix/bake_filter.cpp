@@ -28,7 +28,7 @@
 #include "bake_filter.h"
 #include <bake_api.h>
 #include <vector>
-#include <optixu/optixu_math_namespace.h>
+#include <optix_compat.h>
 #include <utils/cout_progress.h>
 
 using namespace optix;

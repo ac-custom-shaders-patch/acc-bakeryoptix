@@ -1,10 +1,10 @@
-﻿#include "bake_wrap.h"
+#include "bake_wrap.h"
 
 #include <cassert>
 
 #include <utils/perf_moment.h>
 #include <utils/load_util.h>
-#include <bake_ao_optix_prime.h>
+#include <bake_ao_embree.h>
 #include <bake_api.h>
 #include <bake_sample.h>
 
@@ -254,9 +254,9 @@ baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene,
 			make_emissive_plane(c, blocker_meshes);
 		}
 
-		ao_optix_prime(blocker_meshes, ao_samples, config.num_rays, config.scene_albedo, uint32_t(config.bounce_counts),
+		ao_embree(blocker_meshes, ao_samples, config.num_rays, config.scene_albedo, uint32_t(config.bounce_counts),
 			config.scene_offset_scale_horizontal, config.scene_offset_scale_vertical, config.trees_light_pass_chance,
-			config.stack_size, config.batch_size, config.debug_mode, &ao_values[0]);
+			config.debug_mode, &ao_values[0]);
 	}
 
 	// Mapping AO to vertices

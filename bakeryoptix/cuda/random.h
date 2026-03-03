@@ -26,7 +26,7 @@
  */
 
 #pragma once
-#include <optixu/optixu_math_namespace.h>
+#include <optix_compat.h>
 
 template <unsigned int N>
 static __host__ __device__ __inline__ unsigned int tea(unsigned int val0, unsigned int val1)

@@ -32,7 +32,6 @@
 #include <bake_wrap.h>
 #include <cassert>
 #include <cstdio>
-#include <cuda_runtime_api.h>
 #include <fstream>
 #include <iostream>
 #include <set>
@@ -55,9 +54,7 @@
 
 #pragma comment(lib, "Shlwapi.lib")
 #pragma comment(lib, "WinMM.lib")
-#pragma comment(lib, "cudart_static.lib")
-// #pragma comment(lib, "optix_prime.6.0.0.lib")
-#pragma comment(lib, "optix.6.0.0.lib")
+// Embree libs are linked via bake_ao_embree.cpp pragma comments
 
 DEBUGTIME
 
@@ -1101,7 +1098,7 @@ SESSION_TRANSFER=50)");
 			const auto deg = i * rotating_step;
 			if (verbose)
 			{
-				std::cout << (i == 1 ? "\t" : "\r\t") << "Angle: " << deg << utf16_to_utf8(L"°");
+				std::cout << (i == 1 ? "\t" : "\r\t") << "Angle: " << deg << utf16_to_utf8(L"ï¿½");
 			}
 			for (const auto& n : nodes_x)
 			{
@@ -1971,7 +1968,7 @@ SESSION_TRANSFER=50)");
 				auto steering_wheel_scene = std::make_shared<Scene>(steering_wheel);
 				steering_wheel_scene->receivers = root->find_any_meshes(resolve_filter({"STEER_HR", "STEER_LR"}));
 
-				// Baking turned by 180° and setting it as primary AO:
+				// Baking turned by 180ï¿½ and setting it as primary AO:
 				for (const auto& n : steering_wheel)
 				{
 					const auto axis = float3{0.f, 0.f, 1.f};
@@ -1984,7 +1981,7 @@ SESSION_TRANSFER=50)");
 				}
 				ao.replace_primary(bake_scene(steering_wheel_scene, root_scene->blockers, cfg_bake));
 
-				// Turning wheel back to 0°, baking and mixing it in primary AO with multiplier set to 0.67:
+				// Turning wheel back to 0ï¿½, baking and mixing it in primary AO with multiplier set to 0.67:
 				for (const auto& n : steering_wheel)
 				{
 					n->matrix_local = n->matrix_local_orig;
@@ -2175,44 +2172,7 @@ SESSION_TRANSFER=50)");
 	}
 };
 
-#include <cuda_runtime.h>
-
-struct cuda_capabilities
-{
-	bool query_failed;  // True on error
-	int device_count{}; // Number of CUDA devices found 
-	cudaDeviceProp best{};
-
-	std::string info() const
-	{
-		std::stringstream ret;
-		ret << best.name << ", cap.: " << best.major << "." << best.minor;
-		return ret.str();
-	}
-
-	static cuda_capabilities get()
-	{
-		cuda_capabilities ret{};
-		if (cudaGetDeviceCount(&ret.device_count) != cudaSuccess)
-		{
-			ret.query_failed = true;
-		}
-		else
-		{
-			for (auto dev = 0; dev < ret.device_count; dev++)
-			{
-				cudaDeviceProp device_prop{};
-				cudaGetDeviceProperties(&device_prop, dev);
-				if (device_prop.major > ret.best.major
-					|| device_prop.major == ret.best.major && device_prop.minor > ret.best.minor)
-				{
-					ret.best = device_prop;
-				}
-			}
-		}
-		return ret;
-	}
-};
+// CUDA runtime no longer needed â€” using Embree for ray tracing
 
 static LONG CALLBACK unhandled_handler(EXCEPTION_POINTERS* e)
 {
@@ -2241,42 +2201,7 @@ int main(int argc, const char** argv)
 		
 		#else
 
-		bool is_cuda_available;
-		int cuda_version;
-		const auto cuda_result = cudaRuntimeGetVersion(&cuda_version);
-		if (cuda_result == cudaSuccess && cuda_version)
-		{
-			is_cuda_available = true;
-			std::cout << "Installed CUDA toolkit: " << cuda_version / 1000 << "." << cuda_version / 10 % 100 << "\n";
-		}
-		else
-		{
-			is_cuda_available = false;
-			std::cout << "CUDA toolkit is not installed (you can get it here: https://developer.nvidia.com/cuda-80-ga2-download-archive, at least v8.0 is recommended)\n";
-		}
-
-		if (is_cuda_available)
-		{
-			const auto cap = cuda_capabilities::get();
-			if (cap.query_failed)
-			{
-				std::cout << "Failed to check existance of any CUDA-compatible devices\n";
-				is_cuda_available = false;
-			}
-			else if (cap.device_count == 0)
-			{
-				std::cout << "No CUDA-compatible devices found\n";
-				is_cuda_available = false;
-			}
-			else if (cap.device_count == 1)
-			{
-				std::cout << "Found a CUDA-compatible device (" << cap.info() << ")\n";
-			}
-			else
-			{
-				std::cout << "Found " << cap.device_count << " CUDA-compatible devices (best one: " << cap.info() << ")\n";
-			}
-		}
+		std::cout << "Using Embree for ray tracing (CPU)\n";
 
 		if (argc == 1)
 		{

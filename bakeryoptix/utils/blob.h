@@ -1,4 +1,4 @@
-﻿/* For chunks of binary data to simplify handling, writing and reading. Two new types:
+/* For chunks of binary data to simplify handling, writing and reading. Two new types:
  * 1. blob: A vector owning binary data, can be used for writing and reading.
  * 2. blob_view: Does not own anything, stores pointer to existing data, reading only.
  *
@@ -8,6 +8,7 @@
 #pragma once
 
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -16,6 +17,24 @@ namespace utils
 {
 	struct blob;
 	struct blob_view;
+
+	template <size_t Size>
+	constexpr bool tpl_equals(const void* a, const void* b)
+	{
+		return std::memcmp(a, b, Size) == 0;
+	}
+
+	template <size_t Size>
+	bool tpl_equals_ci(const char* a, const char* b)
+	{
+		return _strnicmp(a, b, Size) == 0;
+	}
+
+	template <size_t Size>
+	bool tpl_equals_ci(const wchar_t* a, const wchar_t* b)
+	{
+		return _wcsnicmp(a, b, Size) == 0;
+	}
 
 	namespace utils_inner
 	{
@@ -39,6 +58,18 @@ namespace utils
 			{
 				if ((offset + 1) * sizeof(T) > size_()) throw std::runtime_error("Unexpected end");
 				return *(T*)&data_()[offset * sizeof(T)];
+			}
+
+			template <std::size_t N>
+			[[nodiscard]] bool match(size_t offset, const char(&cs)[N]) const
+			{
+				return offset + N - 1 <= size_() && tpl_equals<N - 1>(&data_()[offset], cs);
+			}
+
+			template <std::size_t N>
+			[[nodiscard]] bool match_unsafe(size_t offset, const char(&cs)[N]) const
+			{
+				return tpl_equals<N - 1>(&data_()[offset], cs);
 			}
 			
 			operator bool() const { return size_() != 0; }

@@ -1,9 +1,8 @@
-﻿#pragma once
+#pragma once
 #include <istream>
 #include <utils/filesystem.h>
 
-#include <vector_types.h>
-#include <optixu/optixu_matrix_namespace.h>
+#include <optix_compat.h>
 #include <bake_api.h>
 
 namespace utils

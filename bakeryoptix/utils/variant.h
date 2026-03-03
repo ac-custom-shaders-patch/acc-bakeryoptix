@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Copyright (C) 2014 Patrick Mours. All rights reserved.
  * License: https://github.com/crosire/reshade#license
  */
@@ -10,8 +10,7 @@
 #include <vector>
 #include "filesystem.h"
 
-#include <vector_types.h>
-#include <optixu/optixu_matrix_namespace.h>
+#include <optix_compat.h>
 
 namespace utils
 {

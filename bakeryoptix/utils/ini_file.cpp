@@ -234,7 +234,7 @@ namespace utils
 						&& renamed.find(candidate) == renamed.end())
 					{
 						renamed[candidate] = it->second;
-						c.erase(it);
+						it = c.erase(it);
 						goto next;
 					}
 				}

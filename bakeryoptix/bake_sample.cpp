@@ -32,8 +32,7 @@
 #include <bake_api.h>
 #include <bake_sample.h>
 #include <bake_sample_internal.h>
-#include <optixu/optixu_math_namespace.h>
-#include <optixu/optixu_matrix_namespace.h>
+#include <optix_compat.h>
 #include <cuda/random.h>
 #include <assert.h>
 #include <iostream>

@@ -2,48 +2,11 @@
 #include <array>
 #include <string>
 #include <vector>
+#include <utils/blob.h>
 #include <utils/string_codecvt.h>
 
 namespace utils
-{
-	template <size_t Size>
-	bool tpl_equals(const void* a, const void* b)
-	{
-		__pragma(warning(push))
-		__pragma(warning(disable:4127))
-		if (Size == 0) return true;
-		if (Size == 1) return *(char*)a == *(char*)b;
-		if (Size == 2) return *(uint16_t*)a == *(uint16_t*)b;
-		if (Size == 3) return *(uint16_t*)a == *(uint16_t*)b && ((char*)a)[2] == ((char*)b)[2];
-		if (Size == 4) return *(uint32_t*)a == *(uint32_t*)b;
-		if (Size == 5) return *(uint32_t*)a == *(uint32_t*)b && ((char*)a)[4] == ((char*)b)[4];
-		if (Size == 6) return *(uint32_t*)a == *(uint32_t*)b && ((uint16_t*)a)[2] == ((uint16_t*)b)[2];
-		if (Size == 7) return *(uint32_t*)a == *(uint32_t*)b && tpl_equals<3>(&((char*)a)[4], &((char*)b)[4]);
-		if (Size == 8) return *(uint64_t*)a == *(uint64_t*)b;
-		if (Size == 9) return *(uint64_t*)a == *(uint64_t*)b && ((char*)a)[8] == ((char*)b)[8];
-		if (Size == 10) return *(uint64_t*)a == *(uint64_t*)b && ((uint16_t*)a)[4] == ((uint16_t*)b)[4];
-		if (Size == 11) return *(uint64_t*)a == *(uint64_t*)b && tpl_equals<3>(&((char*)a)[8], &((char*)b)[8]);
-		if (Size == 12) return *(uint64_t*)a == *(uint64_t*)b && ((uint32_t*)a)[2] == ((uint32_t*)b)[2];
-		if (Size == 13) return *(uint64_t*)a == *(uint64_t*)b && ((uint32_t*)a)[2] == ((uint32_t*)b)[2] && ((char*)a)[12] == ((char*)b)[12];
-		if (Size == 14) return *(uint64_t*)a == *(uint64_t*)b && ((uint32_t*)a)[2] == ((uint32_t*)b)[2] && ((uint16_t*)a)[6] == ((uint16_t*)b)[6];
-		if (Size == 15) return *(uint64_t*)a == *(uint64_t*)b && ((uint32_t*)a)[2] == ((uint32_t*)b)[2] && tpl_equals<3>(&((char*)a)[12], &((char*)b)[12]);
-		if (Size == 16) return *(uint64_t*)a == *(uint64_t*)b && ((uint64_t*)a)[1] == ((uint64_t*)b)[1];
-		__pragma(warning(pop))
-		return std::memcmp(a, b, Size) == 0;
-	}
-
-	template <size_t Size>
-	bool tpl_equals_ci(const char* a, const char* b)
-	{
-		return _strnicmp(a, b, Size) == 0;
-	}
-
-	template <size_t Size>
-	bool tpl_equals_ci(const wchar_t* a, const wchar_t* b)
-	{
-		return _wcsnicmp(a, b, Size) == 0;
-	}
-	
+{	
 	template <typename CharT, size_t Size>
 	size_t tpl_find_ci(const CharT* str1, const CharT* str2, size_t runs)
 	{

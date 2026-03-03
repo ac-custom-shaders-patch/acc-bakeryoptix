@@ -26,16 +26,13 @@
  */
 
 #pragma once
-#include <vector_types.h>
-#include <optixu/optixu_math_namespace.h>
-#include <optix_prime/optix_prime.h>
+#include <optix_compat.h>
 
 namespace bake
 {
 	struct Ray
 	{
-		static const RTPbufferformat format = RTP_BUFFER_FORMAT_RAY_ORIGIN_DIRECTION;
-		optix::float3 origin;
-		optix::float3 direction;
+		float3 origin;
+		float3 direction;
 	};
 }

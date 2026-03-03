@@ -1,9 +1,8 @@
-﻿#include "baked_data.h"
+#include "baked_data.h"
 
 #include <iostream>
 #include <algorithm>
-#include <vector_types.h>
-#include <optixu/optixu_matrix_namespace.h>
+#include <optix_compat.h>
 
 #include <utils/half.h>
 #include <utils/miniz/miniz.h>
