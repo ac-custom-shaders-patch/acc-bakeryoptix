@@ -1,0 +1,368 @@
+#version 460
+#extension GL_EXT_ray_query : require
+
+layout(local_size_x = 128) in;
+
+// ─── Acceleration structure ───
+layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
+
+// ─── Sample data (read-only) ───
+layout(set = 0, binding = 1, std430) readonly buffer SamplePositions   { vec4 samplePos[];      };
+layout(set = 0, binding = 2, std430) readonly buffer SampleNormals     { vec4 sampleNorm[];     };
+layout(set = 0, binding = 3, std430) readonly buffer SampleFaceNormals { vec4 sampleFaceNorm[]; };
+
+// ─── AO output (read-write, accumulated across passes) ───
+layout(set = 0, binding = 4, std430) buffer AOOutput { float aoValues[]; };
+
+// ─── Per-geometry material info ───
+struct GeomInfo {
+    uint  matType;       // 0=opaque,1=alpha_test,2=foliage,3=proc_foliage,4=emissive
+    float alphaRef;
+    float passChance;
+    float albedo;
+    float emissive;
+    uint  vertexOffset;
+    uint  indexOffset;
+    uint  textureIndex;  // 0xFFFFFFFF = no texture
+};
+layout(set = 0, binding = 5, std430) readonly buffer GeomInfos { GeomInfo geomInfos[]; };
+
+// ─── Geometry data ───
+layout(set = 0, binding = 6,  std430) readonly buffer UVData       { vec2 uvs[];       };
+layout(set = 0, binding = 7,  std430) readonly buffer NormalData   { vec4 normals[];   };
+layout(set = 0, binding = 8,  std430) readonly buffer IndexData    { uint indices[];   };
+layout(set = 0, binding = 9,  std430) readonly buffer PositionData { vec4 positions[]; };
+
+// ─── Per-geometry matrices (upper-left 3x3 for normal transform) ───
+layout(set = 0, binding = 10, std430) readonly buffer MatrixData { mat4 matrices[]; };
+
+// ─── Texture data (raw RGBA8 packed as uint per pixel) ───
+struct TextureInfo {
+    uint width;
+    uint height;
+    uint dataOffset;
+    uint _pad;
+};
+layout(set = 0, binding = 11, std430) readonly buffer TexInfos { TextureInfo texInfos[]; };
+layout(set = 0, binding = 12, std430) readonly buffer TexData  { uint texData[];         };
+
+// ─── Push constants ───
+layout(push_constant) uniform PC {
+    int   px;
+    int   py;
+    int   sqrtPasses;
+    uint  numSamples;
+    float sceneOffsetH;
+    float sceneOffsetV;
+    uint  bounceCounts;
+    uint  useOcclusionShortcut;
+} push;
+
+// ═══════════════════════════════════════════════════════════════
+// RNG — matches CPU tea<2> / lcg / rnd exactly
+// ═══════════════════════════════════════════════════════════════
+
+uint tea2(uint val0, uint val1) {
+    uint v0 = val0, v1 = val1, s0 = 0u;
+    for (uint n = 0u; n < 2u; n++) {
+        s0 += 0x9e3779b9u;
+        v0 += ((v1 << 4u) + 0xa341316cu) ^ (v1 + s0) ^ ((v1 >> 5u) + 0xc8013ea4u);
+        v1 += ((v0 << 4u) + 0xad90777du) ^ (v0 + s0) ^ ((v0 >> 5u) + 0x7e95761eu);
+    }
+    return v0;
+}
+
+uint lcg(inout uint prev) {
+    prev = 1664525u * prev + 1013904223u;
+    return prev & 0x00FFFFFFu;
+}
+
+float rng(inout uint seed) {
+    return float(lcg(seed)) / float(0x01000000u);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Cosine-weighted hemisphere sampling
+// ═══════════════════════════════════════════════════════════════
+
+void cosine_sample_hemisphere(float u0, float u1, out vec3 p) {
+    float r   = sqrt(u0);
+    float phi = 2.0 * 3.14159265358979323846 * u1;
+    p = vec3(r * cos(phi), r * sin(phi), sqrt(max(0.0, 1.0 - u0)));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Orthonormal basis from normal
+// ═══════════════════════════════════════════════════════════════
+
+struct Onb { vec3 tangent; vec3 binormal; vec3 normal; };
+
+Onb makeOnb(vec3 n) {
+    Onb o;
+    o.normal = n;
+    if (abs(n.x) > abs(n.z))
+        o.binormal = vec3(-n.y, n.x, 0.0);
+    else
+        o.binormal = vec3(0.0, -n.z, n.y);
+    o.binormal = normalize(o.binormal);
+    o.tangent  = cross(o.binormal, o.normal);
+    return o;
+}
+
+vec3 onbInverseTransform(Onb o, vec3 p) {
+    return p.x * o.tangent + p.y * o.binormal + p.z * o.normal;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// UV hash (float version — matches CPU logic closely)
+// ═══════════════════════════════════════════════════════════════
+
+float uvHash(float tx, float ty) {
+    float h = tx * 693.453 + ty * 246.827;
+    return fract(h);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Texture alpha lookup (returns 0–255)
+// ═══════════════════════════════════════════════════════════════
+
+float textureAlpha(uint geomIdx, uint primID, float u, float v) {
+    GeomInfo info = geomInfos[geomIdx];
+    if (info.textureIndex == 0xFFFFFFFFu) return 255.0;
+
+    uint i0 = indices[info.indexOffset + primID * 3u + 0u];
+    uint i1 = indices[info.indexOffset + primID * 3u + 1u];
+    uint i2 = indices[info.indexOffset + primID * 3u + 2u];
+
+    float w  = 1.0 - u - v;
+    vec2 uv0 = uvs[info.vertexOffset + i0];
+    vec2 uv1 = uvs[info.vertexOffset + i1];
+    vec2 uv2 = uvs[info.vertexOffset + i2];
+    vec2 tc  = w * uv0 + u * uv1 + v * uv2;
+
+    TextureInfo ti = texInfos[info.textureIndex];
+    float fu = fract(tc.x);
+    float fv = fract(tc.y);
+    int ix = int(fu * float(ti.width))  % int(ti.width);
+    int iy = int(fv * float(ti.height)) % int(ti.height);
+    if (ix < 0) ix += int(ti.width);
+    if (iy < 0) iy += int(ti.height);
+
+    uint pixelIdx = ti.dataOffset + uint(iy) * ti.width + uint(ix);
+    uint rgba = texData[pixelIdx];
+    return float((rgba >> 24u) & 0xFFu);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Interpolate UV from triangle barycentrics
+// ═══════════════════════════════════════════════════════════════
+
+vec2 interpolateUV(uint geomIdx, uint primID, float u, float v) {
+    GeomInfo info = geomInfos[geomIdx];
+    uint i0 = indices[info.indexOffset + primID * 3u + 0u];
+    uint i1 = indices[info.indexOffset + primID * 3u + 1u];
+    uint i2 = indices[info.indexOffset + primID * 3u + 2u];
+    float w = 1.0 - u - v;
+    return w * uvs[info.vertexOffset + i0]
+         + u * uvs[info.vertexOffset + i1]
+         + v * uvs[info.vertexOffset + i2];
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Material-aware hit acceptance (candidate filtering)
+// ═══════════════════════════════════════════════════════════════
+
+bool acceptHit(uint geomIdx, uint primID, float u, float v) {
+    uint mt = geomInfos[geomIdx].matType;
+
+    if (mt == 0u || mt == 4u) return true;  // opaque or emissive
+
+    if (mt == 1u) { // alpha_test
+        return textureAlpha(geomIdx, primID, u, v) > geomInfos[geomIdx].alphaRef;
+    }
+    if (mt == 2u) { // foliage
+        float alpha = textureAlpha(geomIdx, primID, u, v);
+        if (alpha > geomInfos[geomIdx].alphaRef) return true;
+        vec2 tc = interpolateUV(geomIdx, primID, u, v);
+        return uvHash(tc.x, tc.y) >= geomInfos[geomIdx].passChance;
+    }
+    if (mt == 3u) { // proc_foliage
+        vec2 tc = interpolateUV(geomIdx, primID, u, v);
+        return uvHash(tc.x, tc.y) >= 0.3;
+    }
+    return true;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Interpolate smooth normal and transform to world space
+// ═══════════════════════════════════════════════════════════════
+
+vec3 interpolateNormal(uint geomIdx, uint primID, float u, float v) {
+    GeomInfo info = geomInfos[geomIdx];
+    uint i0 = indices[info.indexOffset + primID * 3u + 0u];
+    uint i1 = indices[info.indexOffset + primID * 3u + 1u];
+    uint i2 = indices[info.indexOffset + primID * 3u + 2u];
+    float w = 1.0 - u - v;
+    vec3 n = w * normals[info.vertexOffset + i0].xyz
+           + u * normals[info.vertexOffset + i1].xyz
+           + v * normals[info.vertexOffset + i2].xyz;
+    vec3 tn = mat3(matrices[geomIdx]) * n;
+    float len = length(tn);
+    return len > 0.0 ? tn / len : tn;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Geometric normal from world-space triangle positions
+// ═══════════════════════════════════════════════════════════════
+
+vec3 geometricNormal(uint geomIdx, uint primID) {
+    GeomInfo info = geomInfos[geomIdx];
+    uint i0 = indices[info.indexOffset + primID * 3u + 0u];
+    uint i1 = indices[info.indexOffset + primID * 3u + 1u];
+    uint i2 = indices[info.indexOffset + primID * 3u + 2u];
+    vec3 p0 = positions[info.vertexOffset + i0].xyz;
+    vec3 p1 = positions[info.vertexOffset + i1].xyz;
+    vec3 p2 = positions[info.vertexOffset + i2].xyz;
+    return normalize(cross(p1 - p0, p2 - p0));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Main
+// ═══════════════════════════════════════════════════════════════
+
+void main() {
+    uint si = gl_GlobalInvocationID.x;
+    if (si >= push.numSamples) return;
+
+    vec3 norm     = sampleNorm[si].xyz;
+    vec3 faceNorm = sampleFaceNorm[si].xyz;
+    vec3 pos      = samplePos[si].xyz;
+
+    uint seed = tea2(si, uint(push.px * push.sqrtPasses + push.py));
+
+    // Generate cosine-weighted hemisphere direction
+    Onb  onb = makeOnb(norm);
+    vec3 rayDir;
+    float u0 = (float(push.px) + rng(seed)) / float(push.sqrtPasses);
+    float u1 = (float(push.py) + rng(seed)) / float(push.sqrtPasses);
+
+    int retries = 0;
+    do {
+        vec3 hemiDir;
+        cosine_sample_hemisphere(u0, u1, hemiDir);
+        rayDir = onbInverseTransform(onb, hemiDir);
+        retries++;
+        u0 = rng(seed);
+        u1 = rng(seed);
+    } while (retries < 5 && dot(rayDir, faceNorm) <= 0.0);
+
+    // Offset origin to avoid self-intersection
+    vec3 origin = pos + vec3(
+        push.sceneOffsetH * rayDir.x * 0.5,
+        push.sceneOffsetV * rayDir.y * 0.5,
+        push.sceneOffsetH * rayDir.z * 0.5
+    );
+
+    const float rayTmin = 1e-4;
+    const float rayTmax = 1e20;
+
+    // ─── Fast path: occlusion test (no bounces, no emissive) ───
+    if (push.useOcclusionShortcut != 0u) {
+        rayQueryEXT rq;
+        rayQueryInitializeEXT(rq, tlas,
+            gl_RayFlagsTerminateOnFirstHitEXT, 0xFF,
+            origin, rayTmin, rayDir, rayTmax);
+
+        while (rayQueryProceedEXT(rq)) {
+            if (rayQueryGetIntersectionTypeEXT(rq, false)
+                == gl_RayQueryCandidateIntersectionTriangleEXT)
+            {
+                uint  gi = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false);
+                uint  pi = rayQueryGetIntersectionPrimitiveIndexEXT(rq, false);
+                vec2  b  = rayQueryGetIntersectionBarycentricsEXT(rq, false);
+                if (acceptHit(gi, pi, b.x, b.y))
+                    rayQueryConfirmIntersectionEXT(rq);
+            }
+        }
+        if (rayQueryGetIntersectionTypeEXT(rq, true)
+            == gl_RayQueryCommittedIntersectionNoneEXT)
+            aoValues[si] += 1.0;
+        return;
+    }
+
+    // ─── Full path tracing with bounces ───
+    float throughput = 1.0;
+    float aoAccum    = 0.0;
+
+    for (uint bounce = 0u; bounce <= push.bounceCounts; bounce++) {
+
+        rayQueryEXT rq;
+        rayQueryInitializeEXT(rq, tlas,
+            gl_RayFlagsNoneEXT, 0xFF,
+            origin, rayTmin, rayDir, rayTmax);
+
+        while (rayQueryProceedEXT(rq)) {
+            if (rayQueryGetIntersectionTypeEXT(rq, false)
+                == gl_RayQueryCandidateIntersectionTriangleEXT)
+            {
+                uint gi = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false);
+                uint pi = rayQueryGetIntersectionPrimitiveIndexEXT(rq, false);
+                vec2 b  = rayQueryGetIntersectionBarycentricsEXT(rq, false);
+                if (acceptHit(gi, pi, b.x, b.y))
+                    rayQueryConfirmIntersectionEXT(rq);
+            }
+        }
+
+        // Miss → sky visible
+        if (rayQueryGetIntersectionTypeEXT(rq, true)
+            == gl_RayQueryCommittedIntersectionNoneEXT)
+        {
+            aoAccum += throughput;
+            break;
+        }
+
+        // Committed hit
+        uint hitGeom = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
+        uint hitPrim = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
+        vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+        float hitT   = rayQueryGetIntersectionTEXT(rq, true);
+
+        GeomInfo hitInfo = geomInfos[hitGeom];
+
+        if (hitInfo.matType == 4u) { // emissive
+            aoAccum += throughput * hitInfo.emissive;
+            break;
+        }
+
+        if (bounce >= push.bounceCounts || hitInfo.albedo <= 0.0)
+            break;
+
+        throughput *= hitInfo.albedo;
+
+        vec3 hitPos = origin + hitT * rayDir;
+
+        vec3 hitGNorm = geometricNormal(hitGeom, hitPrim);
+        if (dot(hitGNorm, rayDir) > 0.0) hitGNorm = -hitGNorm;
+
+        vec3 hitNorm = interpolateNormal(hitGeom, hitPrim, hitBary.x, hitBary.y);
+        if (dot(hitNorm, rayDir) > 0.0) hitNorm = -hitNorm;
+
+        Onb bounceOnb = makeOnb(hitNorm);
+        u0 = rng(seed);
+        u1 = rng(seed);
+        vec3 newDir;
+        cosine_sample_hemisphere(u0, u1, newDir);
+        rayDir = onbInverseTransform(bounceOnb, newDir);
+
+        if (dot(rayDir, hitGNorm) <= 0.0)
+            break;
+
+        origin = hitPos + vec3(
+            push.sceneOffsetH * rayDir.x * 0.5,
+            push.sceneOffsetV * rayDir.y * 0.5,
+            push.sceneOffsetH * rayDir.z * 0.5
+        );
+    }
+
+    aoValues[si] += aoAccum;
+}

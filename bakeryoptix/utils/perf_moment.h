@@ -14,7 +14,7 @@ struct perf_moment
 	perf_moment(const std::string& v, bool active = true)
 		: v(v), t(std::chrono::high_resolution_clock::now()), a(active)
 	{
-		if (a) std::cout << v << utf16_to_utf8(std::wstring(L"…"));
+		if (a) std::cout << v << "â€¦";
 	}
 
 	~perf_moment()
