@@ -83,6 +83,12 @@ utils::path get_executable_filename()
 
 utils::ini_file load_config(const utils::path& filename)
 {
+	wchar_t var_data[2048]{};
+	if (auto len = GetEnvironmentVariableW(L"AC_VAO_BAKERY_CONFIG", var_data, 2048))
+	{
+		return utils::ini_file{ utils::path(utf16_to_utf8(std::wstring(var_data, len))) };
+	}
+
 	auto config = filename.parent_path() / "baked_shadow_params.ini";
 	if (!exists(config)) config = filename.parent_path() / "baked shadow params.ini";
 	if (!exists(config)) config = get_executable_filename().parent_path() / "baked_shadow_params.ini";
@@ -667,6 +673,10 @@ struct file_processor
 					};
 				}
 			}
+			else
+			{
+				std::cout << "Driver model is missing, VAO won’t apply to the driver\n";
+			}
 		}
 
 		// Loading ground adjustments
@@ -885,7 +895,7 @@ STARTING_LAPS=0
 NAME=Practice
 TYPE=1
 DURATION_MINUTES=0
-SPAWN_SET=HOTLAP_START
+SPAWN_SET=PIT
 
 [TEMPERATURE]
 AMBIENT=10
@@ -1840,42 +1850,19 @@ SESSION_TRANSFER=50)");
 			root_scene->receivers -= root->find_any_meshes(resolve_filter({ "AC_POBJECT?" }));
 		}
 
-		auto ao = bake_scene(root_scene, cfg_bake, true);
-
+		// Samples coming out too dark in the main pass are traced again with more rays: dark areas are lit by
+		// few rays escaping through small openings, so with regular amount of rays they end up very noisy.
+		// Note: threshold shouldn’t be too low, as samples just above it keep their noisy estimate, which biases
+		// AO there to be brighter. With 64 rays, 0.15 or more works well, 0.01–0.05 is worse than no refinement.
+		// That’s also why old DARK_AO_THRESHOLD (0.01, used to pick meshes rather than samples) is not used.
+		auto cfg_main = cfg_bake;
 		if (FEATURE_ACTIVE("REBAKE_DARK_OBJECTS"))
 		{
-			const auto dark_ao_threshold = config.get(section, "DARK_AO_THRESHOLD", 0.01f);
-			const auto dark_vertices_share_threshold = config.get(section, "DARK_VERTICES_SHARE_THRESHOLD", 0.2f);
-
-			std::vector<std::shared_ptr<Mesh>> receivers;
-			for (const auto& p : ao.entries)
-			{
-				auto dark = 0U;
-				for (auto i : p.second.main_set)
-				{
-					if (i.x < dark_ao_threshold)
-					{
-						++dark;
-					}
-				}
-				if (float(dark) > float(p.second.main_set.size()) * dark_vertices_share_threshold && dark > 20)
-				{
-					receivers.push_back(p.first);
-				}
-			}
-
-			if (!receivers.empty())
-			{
-				std::cout << "Rebaking " << receivers.size() << " dark " << (receivers.size() > 1 ? "meshes:\n" : "mesh:\n");
-				auto scene_r = std::make_shared<Scene>(std::move(receivers), root_scene->blockers);
-				memcpy(scene_r->bbox_min, root_scene->bbox_min, sizeof(float) * 3);
-				memcpy(scene_r->bbox_max, root_scene->bbox_max, sizeof(float) * 3);
-				auto cfg_bake_dark = cfg_bake;
-				cfg_bake_dark.num_rays = config.get(section, "DARK_RAYS_PER_SAMPLE", cfg_bake_dark.num_rays);
-				cfg_bake_dark.min_samples_per_face = config.get(section, "DARK_MIN_SAMPLES_PER_FACE", cfg_bake_dark.min_samples_per_face);
-				ao.replace(bake_wrap::bake_scene(scene_r, root_scene->blockers.full, cfg_bake_dark, true));
-			}
+			cfg_main.dark_threshold = config.get(section, "DARK_SAMPLE_THRESHOLD", 0.15f);
+			cfg_main.dark_num_rays = config.get(section, "DARK_RAYS_PER_SAMPLE", 256);
 		}
+
+		auto ao = bake_scene(root_scene, cfg_main, true);
 
 		// Applying trees shadow factor
 		const auto trees_shadow_factor = config.get(section, "TREES_SHADOW_FACTOR", 1.f);
@@ -2219,6 +2206,7 @@ SESSION_TRANSFER=50)");
 					}
 				}
 
+				if (driver_root)
 				{
 					dimmed_meshes += driver_root->find_meshes(resolve_filter(names));
 					if (car_mode)

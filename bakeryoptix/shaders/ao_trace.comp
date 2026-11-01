@@ -56,6 +56,7 @@ layout(push_constant) uniform PC {
     float sceneOffsetV;
     uint  bounceCounts;
     uint  useOcclusionShortcut;
+    uint  sampleOffset;
 } push;
 
 // ═══════════════════════════════════════════════════════════════
@@ -231,7 +232,7 @@ vec3 geometricNormal(uint geomIdx, uint primID) {
 // ═══════════════════════════════════════════════════════════════
 
 void main() {
-    uint si = gl_GlobalInvocationID.x;
+    uint si = gl_GlobalInvocationID.x + push.sampleOffset;
     if (si >= push.numSamples) return;
 
     vec3 norm     = sampleNorm[si].xyz;

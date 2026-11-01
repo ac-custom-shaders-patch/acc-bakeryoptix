@@ -183,7 +183,7 @@ static struct
 		for (auto y = 0U; y < height; ++y)
 		{
 			const auto row_d = &(*ret)[4 * width * y];
-			const auto row_s = (int*)&((char*)res.pData)[res.RowPitch];
+			const auto row_s = (int*)&((char*)res.pData)[res.RowPitch * y];
 			memcpy(row_d, row_s, 4 * width);
 		}
 		context->Unmap(tex_cpu, 0);

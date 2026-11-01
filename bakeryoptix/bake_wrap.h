@@ -33,6 +33,8 @@ struct bake_params {
 
 	int num_rays;
 	int bounce_counts;
+	int dark_num_rays = 0;      // samples with AO below dark_threshold are traced again with this many rays
+	float dark_threshold = 0.f; // 0 disables refinement
 	float scene_offset_scale_horizontal;
 	float scene_offset_scale_vertical;
 	float scene_albedo;

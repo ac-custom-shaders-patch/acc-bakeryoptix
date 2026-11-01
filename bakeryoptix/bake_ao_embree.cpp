@@ -184,17 +184,17 @@ static float3 interpolate_normal(const Mesh* mesh, const float* matrix, unsigned
 // Main AO computation with Embree
 // ============================================================
 
-void bake::ao_embree(const std::vector<Mesh*>& blockers,
+size_t bake::ao_embree(const std::vector<Mesh*>& blockers,
 	const AOSamples& ao_samples, const int rays_per_sample, const float albedo, const uint32_t bounce_counts,
 	const float scene_offset_scale_horizontal, const float scene_offset_scale_vertical, const float trees_light_pass_chance,
-	const bool debug_mode, float* ao_values)
+	const int dark_rays_per_sample, const float dark_threshold, const bool debug_mode, float* ao_values)
 {
 	// --- Create Embree device and scene ---
 	RTCDevice device = rtcNewDevice("threads=0"); // use all HW threads for BVH build
 	if (!device)
 	{
 		std::cerr << "Embree: Failed to create device (error " << rtcGetDeviceError(nullptr) << ")\n";
-		return;
+		return 0;
 	}
 	RTCScene scene = rtcNewScene(device);
 
@@ -248,7 +248,7 @@ void bake::ao_embree(const std::vector<Mesh*>& blockers,
 			if (mesh->name == "blocker")
 			{
 				info.mat_type = MaterialType::opaque;
-				info.albedo = 0.2f;
+				info.albedo = 0.f;
 			}
 			else if (mesh->name == "trees")
 			{
@@ -336,172 +336,209 @@ void bake::ao_embree(const std::vector<Mesh*>& blockers,
 
 	memset(ao_values, 0, sizeof(float) * num_samples);
 
-	const size_t total_passes = size_t(sqrt_passes) * size_t(sqrt_passes);
-	cout_progress progress{total_passes};
-
 	// Pre-cast sample data pointers (invariant across all passes)
 	const auto* sample_norms = reinterpret_cast<const float3*>(ao_samples.sample_normals);
 	const auto* sample_face_norms = reinterpret_cast<const float3*>(ao_samples.sample_face_normals);
 	const auto* sample_pos = reinterpret_cast<const float3*>(ao_samples.sample_positions);
 
-	for (int px = 0; px < sqrt_passes; ++px)
+	// Traces sample_passes² stratified rays for a single sample and returns its AO
+	auto trace_sample = [&](const size_t si, const int sample_passes)
 	{
-		for (int py = 0; py < sqrt_passes; ++py)
+		const float3 norm = sample_norms[si];
+		const float3 face_norm = sample_face_norms[si];
+		const float3 pos = sample_pos[si];
+		const Onb onb(norm);
+		float sample_ao = 0.f;
+
+		for (int px = 0; px < sample_passes; ++px)
+		for (int py = 0; py < sample_passes; ++py)
 		{
-			const unsigned pass_seed = unsigned(px * sqrt_passes + py);
+			const unsigned pass_seed = unsigned(px * sample_passes + py);
 
-			#pragma omp parallel for schedule(dynamic, 512)
-			for (ptrdiff_t si = 0; si < static_cast<ptrdiff_t>(num_samples); ++si)
+			// Seed RNG (matches OptiX tea<2> seeding)
+			unsigned seed = tea<2>(unsigned(si), pass_seed);
+
+			// Generate cosine-weighted hemisphere direction
+			float3 ray_dir;
+			float u0 = (float(px) + rnd(seed)) / float(sample_passes);
+			float u1 = (float(py) + rnd(seed)) / float(sample_passes);
+			int retries = 0;
+			do
 			{
-				const float3 norm = sample_norms[si];
-				const float3 face_norm = sample_face_norms[si];
-				const float3 pos = sample_pos[si];
+				cosine_sample_hemisphere(u0, u1, ray_dir);
+				onb.inverse_transform(ray_dir);
+				++retries;
+				u0 = rnd(seed);
+				u1 = rnd(seed);
+			} while (retries < 5 && dot(ray_dir, face_norm) <= 0.0f);
 
-				// Seed RNG (matches OptiX tea<2> seeding)
-				unsigned seed = tea<2>(unsigned(si), pass_seed);
+			// Offset origin
+			float3 origin = {
+				pos.x + scene_offset_scale_horizontal * ray_dir.x * 0.5f,
+				pos.y + scene_offset_scale_vertical * ray_dir.y * 0.5f,
+				pos.z + scene_offset_scale_horizontal * ray_dir.z * 0.5f
+			};
 
-				// Generate cosine-weighted hemisphere direction
-				Onb onb(norm);
-				float3 ray_dir;
-				float u0 = (float(px) + rnd(seed)) / float(sqrt_passes);
-				float u1 = (float(py) + rnd(seed)) / float(sqrt_passes);
-				int retries = 0;
-				do
-				{
-					cosine_sample_hemisphere(u0, u1, ray_dir);
-					onb.inverse_transform(ray_dir);
-					++retries;
-					u0 = rnd(seed);
-					u1 = rnd(seed);
-				} while (retries < 5 && dot(ray_dir, face_norm) <= 0.0f);
-
-				// Offset origin
-				float3 origin = {
-					pos.x + scene_offset_scale_horizontal * ray_dir.x * 0.5f,
-					pos.y + scene_offset_scale_vertical * ray_dir.y * 0.5f,
-					pos.z + scene_offset_scale_horizontal * ray_dir.z * 0.5f
-				};
-
-				// --- Fast path: simple occlusion test (no bounces, no emissive) ---
-				if (use_occlusion_shortcut)
-				{
-					RTCRay ray;
-					ray.org_x = origin.x;
-					ray.org_y = origin.y;
-					ray.org_z = origin.z;
-					ray.dir_x = ray_dir.x;
-					ray.dir_y = ray_dir.y;
-					ray.dir_z = ray_dir.z;
-					ray.tnear = ray_tmin;
-					ray.tfar  = ray_tmax;
-					ray.mask  = 0xFFFFFFFF;
-					ray.flags = 0;
-
-					RTCIntersectContext ctx;
-					rtcInitIntersectContext(&ctx);
-					rtcOccluded1(scene, &ctx, &ray);
-
-					// If tfar == -inf, ray was occluded (hit something solid)
-					if (ray.tfar >= 0.f)
-						ao_values[si] += 1.0f; // miss — sky visible
-					continue;
-				}
-
-				// --- Full path tracing with bounces ---
-				float throughput = 1.0f;
-				float ao_accum = 0.f;
+			// --- Fast path: simple occlusion test (no bounces, no emissive) ---
+			if (use_occlusion_shortcut)
+			{
+				RTCRay ray;
+				ray.org_x = origin.x;
+				ray.org_y = origin.y;
+				ray.org_z = origin.z;
+				ray.dir_x = ray_dir.x;
+				ray.dir_y = ray_dir.y;
+				ray.dir_z = ray_dir.z;
+				ray.tnear = ray_tmin;
+				ray.tfar  = ray_tmax;
+				ray.mask  = 0xFFFFFFFF;
+				ray.flags = 0;
 
 				RTCIntersectContext ctx;
 				rtcInitIntersectContext(&ctx);
+				rtcOccluded1(scene, &ctx, &ray);
 
-				for (uint32_t bounce = 0; bounce <= bounce_counts; ++bounce)
+				// If tfar == -inf, ray was occluded (hit something solid)
+				if (ray.tfar >= 0.f)
+					sample_ao += 1.0f; // miss — sky visible
+				continue;
+			}
+
+			// --- Full path tracing with bounces ---
+			float throughput = 1.0f;
+			float ao_accum = 0.f;
+
+			RTCIntersectContext ctx;
+			rtcInitIntersectContext(&ctx);
+
+			for (uint32_t bounce = 0; bounce <= bounce_counts; ++bounce)
+			{
+				RTCRayHit rayhit;
+				rayhit.ray.org_x = origin.x;
+				rayhit.ray.org_y = origin.y;
+				rayhit.ray.org_z = origin.z;
+				rayhit.ray.dir_x = ray_dir.x;
+				rayhit.ray.dir_y = ray_dir.y;
+				rayhit.ray.dir_z = ray_dir.z;
+				rayhit.ray.tnear = ray_tmin;
+				rayhit.ray.tfar  = ray_tmax;
+				rayhit.ray.mask  = 0xFFFFFFFF;
+				rayhit.ray.flags = 0;
+				rayhit.hit.geomID = RTC_INVALID_GEOMETRY_ID;
+				rayhit.hit.instID[0] = RTC_INVALID_GEOMETRY_ID;
+
+				// PERF: Single call — filter functions handle alpha testing
+				// inside BVH traversal (no manual retrace loop needed).
+				rtcIntersect1(scene, &ctx, &rayhit);
+
+				if (rayhit.hit.geomID == RTC_INVALID_GEOMETRY_ID)
 				{
-					RTCRayHit rayhit;
-					rayhit.ray.org_x = origin.x;
-					rayhit.ray.org_y = origin.y;
-					rayhit.ray.org_z = origin.z;
-					rayhit.ray.dir_x = ray_dir.x;
-					rayhit.ray.dir_y = ray_dir.y;
-					rayhit.ray.dir_z = ray_dir.z;
-					rayhit.ray.tnear = ray_tmin;
-					rayhit.ray.tfar  = ray_tmax;
-					rayhit.ray.mask  = 0xFFFFFFFF;
-					rayhit.ray.flags = 0;
-					rayhit.hit.geomID = RTC_INVALID_GEOMETRY_ID;
-					rayhit.hit.instID[0] = RTC_INVALID_GEOMETRY_ID;
-
-					// PERF: Single call — filter functions handle alpha testing
-					// inside BVH traversal (no manual retrace loop needed).
-					rtcIntersect1(scene, &ctx, &rayhit);
-
-					if (rayhit.hit.geomID == RTC_INVALID_GEOMETRY_ID)
-					{
-						// Miss — sky is visible
-						ao_accum += throughput * 1.0f;
-						break;
-					}
-
-					// We have a solid hit (filter already rejected transparent surfaces)
-					const auto& hit_info = geom_infos[rayhit.hit.geomID];
-
-					if (hit_info.mat_type == MaterialType::emissive)
-					{
-						ao_accum += throughput * hit_info.emissive;
-						break;
-					}
-
-					if (bounce >= bounce_counts || hit_info.albedo <= 0.f)
-						break; // occluded, no more bounces
-
-					// --- Bounce ---
-					throughput *= hit_info.albedo;
-
-					float3 hit_pos = {
-						rayhit.ray.org_x + rayhit.ray.tfar * rayhit.ray.dir_x,
-						rayhit.ray.org_y + rayhit.ray.tfar * rayhit.ray.dir_y,
-						rayhit.ray.org_z + rayhit.ray.tfar * rayhit.ray.dir_z
-					};
-
-					float3 hit_gnorm = normalize(make_float3(rayhit.hit.Ng_x, rayhit.hit.Ng_y, rayhit.hit.Ng_z));
-					if (dot(hit_gnorm, ray_dir) > 0.f)
-						hit_gnorm = -hit_gnorm;
-
-					float3 hit_norm = interpolate_normal(hit_info.mesh, hit_info.mesh->matrix.data(),
-						rayhit.hit.primID, rayhit.hit.u, rayhit.hit.v);
-					if (dot(hit_norm, ray_dir) > 0.f)
-						hit_norm = -hit_norm;
-
-					Onb bounce_onb(hit_norm);
-					u0 = rnd(seed);
-					u1 = rnd(seed);
-					cosine_sample_hemisphere(u0, u1, ray_dir);
-					bounce_onb.inverse_transform(ray_dir);
-
-					if (dot(ray_dir, hit_gnorm) <= 0.f)
-						break; // absorbed
-
-					origin = {
-						hit_pos.x + scene_offset_scale_horizontal * ray_dir.x * 0.5f,
-						hit_pos.y + scene_offset_scale_vertical * ray_dir.y * 0.5f,
-						hit_pos.z + scene_offset_scale_horizontal * ray_dir.z * 0.5f
-					};
+					// Miss — sky is visible
+					ao_accum += throughput * 1.0f;
+					break;
 				}
 
-				ao_values[si] += ao_accum;
+				// We have a solid hit (filter already rejected transparent surfaces)
+				const auto& hit_info = geom_infos[rayhit.hit.geomID];
+
+				if (hit_info.mat_type == MaterialType::emissive)
+				{
+					ao_accum += throughput * hit_info.emissive;
+					break;
+				}
+
+				if (bounce >= bounce_counts || hit_info.albedo <= 0.f)
+					break; // occluded, no more bounces
+
+				// --- Bounce ---
+				throughput *= hit_info.albedo;
+
+				float3 hit_pos = {
+					rayhit.ray.org_x + rayhit.ray.tfar * rayhit.ray.dir_x,
+					rayhit.ray.org_y + rayhit.ray.tfar * rayhit.ray.dir_y,
+					rayhit.ray.org_z + rayhit.ray.tfar * rayhit.ray.dir_z
+				};
+
+				float3 hit_gnorm = normalize(make_float3(rayhit.hit.Ng_x, rayhit.hit.Ng_y, rayhit.hit.Ng_z));
+				if (dot(hit_gnorm, ray_dir) > 0.f)
+					hit_gnorm = -hit_gnorm;
+
+				float3 hit_norm = interpolate_normal(hit_info.mesh, hit_info.mesh->matrix.data(),
+					rayhit.hit.primID, rayhit.hit.u, rayhit.hit.v);
+				if (dot(hit_norm, ray_dir) > 0.f)
+					hit_norm = -hit_norm;
+
+				Onb bounce_onb(hit_norm);
+				u0 = rnd(seed);
+				u1 = rnd(seed);
+				cosine_sample_hemisphere(u0, u1, ray_dir);
+				bounce_onb.inverse_transform(ray_dir);
+
+				if (dot(ray_dir, hit_gnorm) <= 0.f)
+					break; // absorbed
+
+				origin = {
+					hit_pos.x + scene_offset_scale_horizontal * ray_dir.x * 0.5f,
+					hit_pos.y + scene_offset_scale_vertical * ray_dir.y * 0.5f,
+					hit_pos.z + scene_offset_scale_horizontal * ray_dir.z * 0.5f
+				};
+			}
+
+			sample_ao += ao_accum;
+		}
+
+		// Normalize by the number of rays actually traced (sample_passes² might differ from requested ray count)
+		return sample_ao / float(sample_passes * sample_passes);
+	};
+
+	// Traces count samples in parallel, sample_at(i) maps i to a sample index. PERF: samples are the outer loop
+	// and passes the inner one, so all rays of a sample are traced by the same thread back to back: BVH nodes
+	// around the sample stay in cache, and there is no thread sync per pass. Progress is reported per block.
+	auto trace_samples = [&](const size_t count, const int sample_passes, const auto& sample_at)
+	{
+		const size_t num_blocks = std::max<size_t>(1, std::min<size_t>(256, count / 1024));
+		const size_t block_size = (count + num_blocks - 1) / num_blocks;
+		cout_progress progress{num_blocks};
+
+		for (size_t block = 0; block < num_blocks; ++block)
+		{
+			const ptrdiff_t block_start = ptrdiff_t(block * block_size);
+			const ptrdiff_t block_end = ptrdiff_t(std::min(count, (block + 1) * block_size));
+
+			#pragma omp parallel for schedule(dynamic, 16)
+			for (ptrdiff_t i = block_start; i < block_end; ++i)
+			{
+				const size_t si = sample_at(size_t(i));
+				ao_values[si] = trace_sample(si, sample_passes);
 			}
 
 			progress.report();
 		}
-	}
+	};
 
-	// Normalize
-	const float inv_total = 1.0f / float(rays_per_sample);
-	for (size_t i = 0; i < num_samples; ++i)
+	trace_samples(num_samples, sqrt_passes, [](const size_t i) { return i; });
+
+	// Adaptive refinement: samples darker than the threshold are mostly lit by a few rays escaping through
+	// small openings (like car interiors), so their estimate is very noisy. Only those are traced again with
+	// more rays, reusing the same scene, and the new estimate replaces the old one.
+	size_t refined = 0;
+	const int dark_sqrt_passes = static_cast<int>(lroundf(sqrtf(static_cast<float>(std::max(dark_rays_per_sample, 0)))));
+	if (dark_threshold > 0.f && dark_sqrt_passes > sqrt_passes)
 	{
-		ao_values[i] *= inv_total;
+		std::vector<size_t> dark_samples;
+		for (size_t i = 0; i < num_samples; ++i)
+		{
+			if (ao_values[i] < dark_threshold) dark_samples.push_back(i);
+		}
+		if (!dark_samples.empty())
+		{
+			trace_samples(dark_samples.size(), dark_sqrt_passes, [&](const size_t i) { return dark_samples[i]; });
+		}
+		refined = dark_samples.size();
 	}
 
 	// Cleanup
 	rtcReleaseScene(scene);
 	rtcReleaseDevice(device);
+	return refined;
 }

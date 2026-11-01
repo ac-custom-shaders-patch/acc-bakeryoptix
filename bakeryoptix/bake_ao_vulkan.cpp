@@ -22,6 +22,9 @@
 #include <cstring>
 #include <algorithm>
 #include <cassert>
+#include <chrono>
+#include <stdexcept>
+#include <string>
 
 // Embedded SPIR-V
 #include "shaders/ao_trace_spv.h"
@@ -47,6 +50,8 @@ struct VkCtx
 	uint32_t         queueFamily   = 0;
 	VkCommandPool    cmdPool       = VK_NULL_HANDLE;
 	VmaAllocator     vma           = VK_NULL_HANDLE;
+	VkDeviceSize     scratchAlign  = 256;
+	bool             failed        = false;
 
 	// Extension function pointers (loaded after device creation)
 	PFN_vkCreateAccelerationStructureKHR           pfnCreateAS          = nullptr;
@@ -109,13 +114,20 @@ struct PushConstants
 	float    sceneOffsetV;
 	uint32_t bounceCounts;
 	uint32_t useOcclusionShortcut;
+	uint32_t sampleOffset;
 };
+
+void vkCheck(VkResult r, const char* what)
+{
+	if (r != VK_SUCCESS)
+		throw std::runtime_error(std::string(what) + " failed (VkResult " + std::to_string((int)r) + ")");
+}
 
 // ════════════════════════════════════════════════════════════════
 // Buffer helpers
 // ════════════════════════════════════════════════════════════════
 
-GpuBuf createBuffer(VkCtx& ctx, VkDeviceSize size, VkBufferUsageFlags usage, VmaMemoryUsage memUsage)
+GpuBuf createBuffer(VkCtx& ctx, VkDeviceSize size, VkBufferUsageFlags usage, VmaMemoryUsage memUsage, VkDeviceSize minAlignment = 0)
 {
 	GpuBuf b;
 	b.size = size;
@@ -128,7 +140,9 @@ GpuBuf createBuffer(VkCtx& ctx, VkDeviceSize size, VkBufferUsageFlags usage, Vma
 	VmaAllocationCreateInfo allocCI{};
 	allocCI.usage = memUsage;
 
-	vmaCreateBuffer(ctx.vma, &bufCI, &allocCI, &b.buf, &b.alloc, nullptr);
+	vkCheck(minAlignment
+		? vmaCreateBufferWithAlignment(ctx.vma, &bufCI, &allocCI, minAlignment, &b.buf, &b.alloc, nullptr)
+		: vmaCreateBuffer(ctx.vma, &bufCI, &allocCI, &b.buf, &b.alloc, nullptr), "vmaCreateBuffer");
 	return b;
 }
 
@@ -159,7 +173,7 @@ VkCommandBuffer beginCmd(VkCtx& ctx)
 	ai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 	ai.commandBufferCount = 1;
 	VkCommandBuffer cmd;
-	vkAllocateCommandBuffers(ctx.device, &ai, &cmd);
+	vkCheck(vkAllocateCommandBuffers(ctx.device, &ai, &cmd), "vkAllocateCommandBuffers");
 
 	VkCommandBufferBeginInfo bi{};
 	bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -170,14 +184,24 @@ VkCommandBuffer beginCmd(VkCtx& ctx)
 
 void endCmd(VkCtx& ctx, VkCommandBuffer cmd)
 {
-	vkEndCommandBuffer(cmd);
+	// Every submission is followed by a wait, but waiting alone doesn't make writes visible to the next
+	// submission or to the host: without this barrier uploads, AS builds and AO readback race on drivers
+	// with non-coherent caches (AMD in particular)
+	VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+	mb.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+	mb.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_HOST_READ_BIT;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+		VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+
+	vkCheck(vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
 	VkSubmitInfo si{};
 	si.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	si.commandBufferCount = 1;
 	si.pCommandBuffers    = &cmd;
-	vkQueueSubmit(ctx.queue, 1, &si, VK_NULL_HANDLE);
-	vkQueueWaitIdle(ctx.queue);
+	vkCheck(vkQueueSubmit(ctx.queue, 1, &si, VK_NULL_HANDLE), "vkQueueSubmit");
+	const auto waitResult = vkQueueWaitIdle(ctx.queue);
 	vkFreeCommandBuffers(ctx.device, ctx.cmdPool, 1, &cmd);
+	vkCheck(waitResult, "vkQueueWaitIdle");
 }
 
 // Upload data to a device-local buffer via staging. Returns empty buffer if size==0.
@@ -228,7 +252,8 @@ bool initVulkan(VkCtx& ctx)
 	std::vector<VkPhysicalDevice> devs(devCount);
 	vkEnumeratePhysicalDevices(ctx.instance, &devCount, devs.data());
 
-	// Pick first device with required extensions
+	// Pick the best device with required extensions and features. Prefer discrete GPUs: Ryzen CPUs come with
+	// ray query capable iGPUs which might be enumerated first, and baking on those is slow enough to hit TDR.
 	const char* requiredExts[] = {
 		VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
 		VK_KHR_RAY_QUERY_EXTENSION_NAME,
@@ -236,6 +261,8 @@ bool initVulkan(VkCtx& ctx)
 	};
 	constexpr uint32_t numRequired = 3;
 
+	int bestScore = -1;
+	VkDeviceSize bestVram = 0;
 	for (auto dev : devs)
 	{
 		uint32_t extCount = 0;
@@ -247,27 +274,46 @@ bool initVulkan(VkCtx& ctx)
 		for (auto& e : exts)
 			for (uint32_t r = 0; r < numRequired; ++r)
 				if (strcmp(e.extensionName, requiredExts[r]) == 0) ++found;
+		if (found < numRequired) continue;
 
-		if (found >= numRequired)
+		VkPhysicalDeviceRayQueryFeaturesKHR            rqFeats{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+		VkPhysicalDeviceAccelerationStructureFeaturesKHR asFeats{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+		asFeats.pNext = &rqFeats;
+		VkPhysicalDeviceVulkan12Features               v12Feats{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+		v12Feats.pNext = &asFeats;
+		VkPhysicalDeviceFeatures2                      feats2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+		feats2.pNext = &v12Feats;
+		vkGetPhysicalDeviceFeatures2(dev, &feats2);
+		if (!rqFeats.rayQuery || !asFeats.accelerationStructure || !v12Feats.bufferDeviceAddress) continue;
+
+		VkPhysicalDeviceProperties props;
+		vkGetPhysicalDeviceProperties(dev, &props);
+		VkPhysicalDeviceMemoryProperties memProps;
+		vkGetPhysicalDeviceMemoryProperties(dev, &memProps);
+		VkDeviceSize vram = 0;
+		for (uint32_t i = 0; i < memProps.memoryHeapCount; ++i)
+			if (memProps.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+				vram = std::max(vram, memProps.memoryHeaps[i].size);
+
+		const int score = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 2
+			: props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 1 : 0;
+		if (score > bestScore || (score == bestScore && vram > bestVram))
 		{
+			bestScore = score;
+			bestVram = vram;
 			ctx.gpu = dev;
-			break;
 		}
 	}
 	if (ctx.gpu == VK_NULL_HANDLE) return false;
 
-	// --- Check feature support ---
-	VkPhysicalDeviceRayQueryFeaturesKHR            rqFeats{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
-	VkPhysicalDeviceAccelerationStructureFeaturesKHR asFeats{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
-	asFeats.pNext = &rqFeats;
-	VkPhysicalDeviceVulkan12Features               v12Feats{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
-	v12Feats.pNext = &asFeats;
-	VkPhysicalDeviceFeatures2                      feats2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-	feats2.pNext = &v12Feats;
-	vkGetPhysicalDeviceFeatures2(ctx.gpu, &feats2);
-
-	if (!rqFeats.rayQuery || !asFeats.accelerationStructure || !v12Feats.bufferDeviceAddress)
-		return false;
+	{
+		VkPhysicalDeviceAccelerationStructurePropertiesKHR asProps{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
+		VkPhysicalDeviceProperties2 props2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+		props2.pNext = &asProps;
+		vkGetPhysicalDeviceProperties2(ctx.gpu, &props2);
+		ctx.scratchAlign = std::max<VkDeviceSize>(asProps.minAccelerationStructureScratchOffsetAlignment, 1);
+		std::cout << "Vulkan device: " << props2.properties.deviceName << "\n";
+	}
 
 	// --- Find compute queue ---
 	uint32_t qfCount = 0;
@@ -321,7 +367,7 @@ bool initVulkan(VkCtx& ctx)
 	poolCI.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
 	poolCI.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 	poolCI.queueFamilyIndex = ctx.queueFamily;
-	vkCreateCommandPool(ctx.device, &poolCI, nullptr, &ctx.cmdPool);
+	if (vkCreateCommandPool(ctx.device, &poolCI, nullptr, &ctx.cmdPool) != VK_SUCCESS) return false;
 
 	// --- VMA ---
 	VmaAllocatorCreateInfo vmaCI{};
@@ -330,7 +376,7 @@ bool initVulkan(VkCtx& ctx)
 	vmaCI.device           = ctx.device;
 	vmaCI.instance         = ctx.instance;
 	vmaCI.flags            = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
-	vmaCreateAllocator(&vmaCI, &ctx.vma);
+	if (vmaCreateAllocator(&vmaCI, &ctx.vma) != VK_SUCCESS) return false;
 
 	return true;
 }
@@ -383,11 +429,13 @@ AccelStruct buildBLAS(VkCtx& ctx, VkDeviceAddress vertAddr, uint32_t vertCount,
 	asCI.buffer = as.buf.buf;
 	asCI.size   = sizes.accelerationStructureSize;
 	asCI.type   = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-	ctx.pfnCreateAS(ctx.device, &asCI, nullptr, &as.as);
+	vkCheck(ctx.pfnCreateAS(ctx.device, &asCI, nullptr, &as.as), "vkCreateAccelerationStructureKHR");
 
+	// Scratch address has to respect minAccelerationStructureScratchOffsetAlignment: VMA suballocates, and
+	// regular buffer alignment on AMD is smaller than that, leading to corrupted BVHs
 	GpuBuf scratch = createBuffer(ctx, sizes.buildScratchSize,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		VMA_MEMORY_USAGE_GPU_ONLY);
+		VMA_MEMORY_USAGE_GPU_ONLY, ctx.scratchAlign);
 
 	buildInfo.dstAccelerationStructure  = as.as;
 	buildInfo.scratchData.deviceAddress = getBufferAddress(ctx, scratch.buf);
@@ -439,11 +487,11 @@ AccelStruct buildTLAS(VkCtx& ctx, const std::vector<VkAccelerationStructureInsta
 	asCI.buffer = tlas.buf.buf;
 	asCI.size   = sizes.accelerationStructureSize;
 	asCI.type   = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
-	ctx.pfnCreateAS(ctx.device, &asCI, nullptr, &tlas.as);
+	vkCheck(ctx.pfnCreateAS(ctx.device, &asCI, nullptr, &tlas.as), "vkCreateAccelerationStructureKHR");
 
 	GpuBuf scratch = createBuffer(ctx, sizes.buildScratchSize,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		VMA_MEMORY_USAGE_GPU_ONLY);
+		VMA_MEMORY_USAGE_GPU_ONLY, ctx.scratchAlign);
 
 	buildInfo.dstAccelerationStructure  = tlas.as;
 	buildInfo.scratchData.deviceAddress = getBufferAddress(ctx, scratch.buf);
@@ -545,6 +593,8 @@ const char* bake::vulkan_configure()
 	}
 	else if (!initVulkan(_vulcan_ready_ctx))
 	{
+		// Partially initialized context would otherwise still count as available
+		cleanupVulkan(_vulcan_ready_ctx);
 		return "failed to set up Vulkan context";
 	}
 	else
@@ -555,17 +605,17 @@ const char* bake::vulkan_configure()
 
 bool bake::vulkan_available()
 {
-	return _vulcan_ready_ctx.instance != nullptr;
+	return _vulcan_ready_ctx.device != VK_NULL_HANDLE && !_vulcan_ready_ctx.failed;
 }
 
 // ════════════════════════════════════════════════════════════════
 // ao_vulkan() — main entry point
 // ════════════════════════════════════════════════════════════════
 
-void bake::ao_vulkan(const std::vector<Mesh*>& blockers,
+static size_t ao_vulkan_run(const std::vector<Mesh*>& blockers,
 	const AOSamples& ao_samples, const int rays_per_sample, const float albedo, const uint32_t bounce_counts,
 	const float scene_offset_scale_horizontal, const float scene_offset_scale_vertical,
-	const float trees_light_pass_chance, const bool debug_mode, float* ao_values)
+	const float trees_light_pass_chance, const int dark_rays_per_sample, const float dark_threshold, float* ao_values)
 {
 	// We concatenate all meshes' data into single flat arrays.
 	// Each mesh becomes one BLAS, one TLAS instance.
@@ -732,7 +782,9 @@ void bake::ao_vulkan(const std::vector<Mesh*>& blockers,
 
 	if (entries.empty())
 	{
-		return;
+		// Nothing to occlude: every ray reaches the sky (matches Embree)
+		std::fill(ao_values, ao_values + ao_samples.num_samples, 1.f);
+		return 0;
 	}
 
 	// ── 3. Upload geometry to GPU ──
@@ -793,51 +845,12 @@ void bake::ao_vulkan(const std::vector<Mesh*>& blockers,
 
 	AccelStruct tlas = buildTLAS(ctx, tlasInstances);
 
-	// ── 6. Upload sample data ──
-	const size_t numSamples = ao_samples.num_samples;
-
-	// Pad float3 → vec4
-	std::vector<float> padSamplePos(numSamples * 4);
-	std::vector<float> padSampleNorm(numSamples * 4);
-	std::vector<float> padSampleFaceNorm(numSamples * 4);
-	for (size_t i = 0; i < numSamples; ++i)
-	{
-		padSamplePos[i*4+0] = ao_samples.sample_positions[i*3+0];
-		padSamplePos[i*4+1] = ao_samples.sample_positions[i*3+1];
-		padSamplePos[i*4+2] = ao_samples.sample_positions[i*3+2];
-		padSamplePos[i*4+3] = 0.f;
-
-		padSampleNorm[i*4+0] = ao_samples.sample_normals[i*3+0];
-		padSampleNorm[i*4+1] = ao_samples.sample_normals[i*3+1];
-		padSampleNorm[i*4+2] = ao_samples.sample_normals[i*3+2];
-		padSampleNorm[i*4+3] = 0.f;
-
-		padSampleFaceNorm[i*4+0] = ao_samples.sample_face_normals[i*3+0];
-		padSampleFaceNorm[i*4+1] = ao_samples.sample_face_normals[i*3+1];
-		padSampleFaceNorm[i*4+2] = ao_samples.sample_face_normals[i*3+2];
-		padSampleFaceNorm[i*4+3] = 0.f;
-	}
-
-	GpuBuf samplePosBuf      = uploadToGpu(ctx, padSamplePos.data(),      padSamplePos.size()      * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-	GpuBuf sampleNormBuf     = uploadToGpu(ctx, padSampleNorm.data(),     padSampleNorm.size()     * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-	GpuBuf sampleFaceNormBuf = uploadToGpu(ctx, padSampleFaceNorm.data(), padSampleFaceNorm.size() * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-
-	// AO output buffer (device-local, initialised to zero)
-	GpuBuf aoBuf = createBuffer(ctx, numSamples * sizeof(float),
-		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-		VMA_MEMORY_USAGE_GPU_ONLY);
-	{
-		VkCommandBuffer cmd = beginCmd(ctx);
-		vkCmdFillBuffer(cmd, aoBuf.buf, 0, VK_WHOLE_SIZE, 0);
-		endCmd(ctx, cmd);
-	}
-
-	// ── 7. Create compute pipeline ──
+	// ── 6. Create compute pipeline ──
 	VkShaderModuleCreateInfo smCI{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
 	smCI.codeSize = ao_trace_spv_size;
 	smCI.pCode    = ao_trace_spv;
 	VkShaderModule shaderModule;
-	vkCreateShaderModule(ctx.device, &smCI, nullptr, &shaderModule);
+	vkCheck(vkCreateShaderModule(ctx.device, &smCI, nullptr, &shaderModule), "vkCreateShaderModule");
 
 	// Descriptor set layout (13 bindings)
 	VkDescriptorSetLayoutBinding bindings[13]{};
@@ -855,7 +868,7 @@ void bake::ao_vulkan(const std::vector<Mesh*>& blockers,
 	dslCI.bindingCount = 13;
 	dslCI.pBindings    = bindings;
 	VkDescriptorSetLayout dsLayout;
-	vkCreateDescriptorSetLayout(ctx.device, &dslCI, nullptr, &dsLayout);
+	vkCheck(vkCreateDescriptorSetLayout(ctx.device, &dslCI, nullptr, &dsLayout), "vkCreateDescriptorSetLayout");
 
 	VkPushConstantRange pcRange{};
 	pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -868,7 +881,7 @@ void bake::ao_vulkan(const std::vector<Mesh*>& blockers,
 	plCI.pushConstantRangeCount = 1;
 	plCI.pPushConstantRanges    = &pcRange;
 	VkPipelineLayout pipeLayout;
-	vkCreatePipelineLayout(ctx.device, &plCI, nullptr, &pipeLayout);
+	vkCheck(vkCreatePipelineLayout(ctx.device, &plCI, nullptr, &pipeLayout), "vkCreatePipelineLayout");
 
 	VkComputePipelineCreateInfo cpCI{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
 	cpCI.stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -877,9 +890,9 @@ void bake::ao_vulkan(const std::vector<Mesh*>& blockers,
 	cpCI.stage.pName  = "main";
 	cpCI.layout       = pipeLayout;
 	VkPipeline pipeline;
-	vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &cpCI, nullptr, &pipeline);
+	vkCheck(vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &cpCI, nullptr, &pipeline), "vkCreateComputePipelines");
 
-	// ── 8. Descriptor set ──
+	// ── 7. Descriptor set ──
 	VkDescriptorPoolSize poolSizes[] = {
 		{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1 },
 		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 12 }
@@ -889,28 +902,24 @@ void bake::ao_vulkan(const std::vector<Mesh*>& blockers,
 	dpCI.poolSizeCount = 2;
 	dpCI.pPoolSizes    = poolSizes;
 	VkDescriptorPool descPool;
-	vkCreateDescriptorPool(ctx.device, &dpCI, nullptr, &descPool);
+	vkCheck(vkCreateDescriptorPool(ctx.device, &dpCI, nullptr, &descPool), "vkCreateDescriptorPool");
 
 	VkDescriptorSetAllocateInfo dsAI{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
 	dsAI.descriptorPool     = descPool;
 	dsAI.descriptorSetCount = 1;
 	dsAI.pSetLayouts        = &dsLayout;
 	VkDescriptorSet descSet;
-	vkAllocateDescriptorSets(ctx.device, &dsAI, &descSet);
+	vkCheck(vkAllocateDescriptorSets(ctx.device, &dsAI, &descSet), "vkAllocateDescriptorSets");
 
-	// Write descriptors
 	VkWriteDescriptorSetAccelerationStructureKHR asWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
 	asWrite.accelerationStructureCount = 1;
 	asWrite.pAccelerationStructures    = &tlas.as;
 
+	// Bindings 1–4 (samples and output) are set per pass in tracePass(), the rest is the scene and stays the same
 	VkDescriptorBufferInfo bufInfos[12]{};
 	auto setBI = [](VkDescriptorBufferInfo& bi, VkBuffer buf, VkDeviceSize sz) {
 		bi.buffer = buf; bi.offset = 0; bi.range = sz;
 	};
-	setBI(bufInfos[0],  samplePosBuf.buf,      samplePosBuf.size);
-	setBI(bufInfos[1],  sampleNormBuf.buf,     sampleNormBuf.size);
-	setBI(bufInfos[2],  sampleFaceNormBuf.buf, sampleFaceNormBuf.size);
-	setBI(bufInfos[3],  aoBuf.buf,             aoBuf.size);
 	setBI(bufInfos[4],  geomInfoBuf.buf,       geomInfoBuf.size);
 	setBI(bufInfos[5],  uvBuf.buf,             uvBuf.size);
 	setBI(bufInfos[6],  normBuf.buf,           normBuf.size);
@@ -938,88 +947,155 @@ void bake::ao_vulkan(const std::vector<Mesh*>& blockers,
 		writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 		writes[i].pBufferInfo     = &bufInfos[i - 1];
 	}
-	vkUpdateDescriptorSets(ctx.device, 13, writes, 0, nullptr);
 
-	// ── 9. Dispatch passes ──
-	const int sqrtPasses = (int)lroundf(sqrtf((float)rays_per_sample));
-	const size_t totalPasses = (size_t)sqrtPasses * sqrtPasses;
+	// ── 8. Trace passes ──
 	const bool useOcclusionShortcut = (bounce_counts == 0) && !hasEmissive;
 	const uint32_t workgroupSize = 128;
-	const uint32_t numGroups = ((uint32_t)numSamples + workgroupSize - 1) / workgroupSize;
 
-	memset(ao_values, 0, sizeof(float) * numSamples);
-	cout_progress progress{totalPasses};
+	// Samples are dispatched in chunks sized to keep each submission well under Windows TDR timeout (2 s):
+	// a single dispatch covering a whole track on slower RT hardware would get the GPU reset mid-way,
+	// leaving AO only partially accumulated (results too dark) or zeroed. Chunk size adapts to actual speed.
+	uint32_t chunkSize = 64 * workgroupSize;
+	const uint32_t minChunkSize = 8 * workgroupSize;
+	const uint32_t maxChunkSize = 1u << 24;
 
-	for (int px = 0; px < sqrtPasses; ++px)
+	// Traces count samples (sampleAt(i) maps i to a sample index) with sqrtPasses² rays each and writes normalized
+	// AO to ao_values. Samples are uploaded compacted, so the same code works for all samples and for a subset.
+	auto tracePass = [&](const size_t count, const int sqrtPasses, const auto& sampleAt)
 	{
-		for (int py = 0; py < sqrtPasses; ++py)
+		// Upload sample data, padding float3 → vec4
+		std::vector<float> padSamplePos(count * 4);
+		std::vector<float> padSampleNorm(count * 4);
+		std::vector<float> padSampleFaceNorm(count * 4);
+		for (size_t i = 0; i < count; ++i)
 		{
-			PushConstants pc{};
-			pc.px                   = px;
-			pc.py                   = py;
-			pc.sqrtPasses           = sqrtPasses;
-			pc.numSamples           = (uint32_t)numSamples;
-			pc.sceneOffsetH         = scene_offset_scale_horizontal;
-			pc.sceneOffsetV         = scene_offset_scale_vertical;
-			pc.bounceCounts         = bounce_counts;
-			pc.useOcclusionShortcut = useOcclusionShortcut ? 1u : 0u;
-
-			VkCommandBuffer cmd = beginCmd(ctx);
-
-			// Memory barrier: ensure previous pass writes are visible
-			if (px != 0 || py != 0)
+			const size_t s = sampleAt(i);
+			for (int c = 0; c < 3; ++c)
 			{
-				VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-				mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-				mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-				vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+				padSamplePos[i*4+c]      = ao_samples.sample_positions[s*3+c];
+				padSampleNorm[i*4+c]     = ao_samples.sample_normals[s*3+c];
+				padSampleFaceNorm[i*4+c] = ao_samples.sample_face_normals[s*3+c];
 			}
-
-			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeLayout, 0, 1, &descSet, 0, nullptr);
-			vkCmdPushConstants(cmd, pipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-			vkCmdDispatch(cmd, numGroups, 1, 1);
-
-			endCmd(ctx, cmd);
-
-			progress.report();
 		}
-	}
 
-	// ── 10. Read back results ──
-	GpuBuf readback = createBuffer(ctx, numSamples * sizeof(float),
-		VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_CPU_ONLY);
+		GpuBuf samplePosBuf      = uploadToGpu(ctx, padSamplePos.data(),      padSamplePos.size()      * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+		GpuBuf sampleNormBuf     = uploadToGpu(ctx, padSampleNorm.data(),     padSampleNorm.size()     * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+		GpuBuf sampleFaceNormBuf = uploadToGpu(ctx, padSampleFaceNorm.data(), padSampleFaceNorm.size() * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+
+		// AO output buffer (device-local, initialised to zero)
+		GpuBuf aoBuf = createBuffer(ctx, count * sizeof(float),
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VMA_MEMORY_USAGE_GPU_ONLY);
+		{
+			VkCommandBuffer cmd = beginCmd(ctx);
+			vkCmdFillBuffer(cmd, aoBuf.buf, 0, VK_WHOLE_SIZE, 0);
+			endCmd(ctx, cmd);
+		}
+
+		// Previous pass has finished (endCmd() waits), so the set can be updated safely
+		setBI(bufInfos[0], samplePosBuf.buf,      samplePosBuf.size);
+		setBI(bufInfos[1], sampleNormBuf.buf,     sampleNormBuf.size);
+		setBI(bufInfos[2], sampleFaceNormBuf.buf, sampleFaceNormBuf.size);
+		setBI(bufInfos[3], aoBuf.buf,             aoBuf.size);
+		vkUpdateDescriptorSets(ctx.device, 13, writes, 0, nullptr);
+
+		const size_t totalPasses = (size_t)sqrtPasses * sqrtPasses;
+		const uint32_t countU = (uint32_t)count;
+		cout_progress progress{totalPasses};
+
+		for (int px = 0; px < sqrtPasses; ++px)
+		{
+			for (int py = 0; py < sqrtPasses; ++py)
+			{
+				PushConstants pc{};
+				pc.px                   = px;
+				pc.py                   = py;
+				pc.sqrtPasses           = sqrtPasses;
+				pc.numSamples           = countU;
+				pc.sceneOffsetH         = scene_offset_scale_horizontal;
+				pc.sceneOffsetV         = scene_offset_scale_vertical;
+				pc.bounceCounts         = bounce_counts;
+				pc.useOcclusionShortcut = useOcclusionShortcut ? 1u : 0u;
+
+				for (uint32_t offset = 0; offset < countU;)
+				{
+					const uint32_t chunk = std::min(chunkSize, countU - offset);
+					pc.sampleOffset = offset;
+
+					const auto start = std::chrono::steady_clock::now();
+					VkCommandBuffer cmd = beginCmd(ctx);
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+					vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeLayout, 0, 1, &descSet, 0, nullptr);
+					vkCmdPushConstants(cmd, pipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+					vkCmdDispatch(cmd, (chunk + workgroupSize - 1) / workgroupSize, 1, 1);
+					endCmd(ctx, cmd);
+					const auto elapsedMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count();
+
+					offset += chunk;
+					if (elapsedMs < 60.f && chunk == chunkSize && chunkSize < maxChunkSize) chunkSize *= 2;
+					else if (elapsedMs > 250.f && chunkSize > minChunkSize) chunkSize /= 2;
+				}
+
+				progress.report();
+			}
+		}
+
+		// Read back results
+		GpuBuf readback = createBuffer(ctx, count * sizeof(float),
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_CPU_ONLY);
+		{
+			VkCommandBuffer cmd = beginCmd(ctx);
+			VkBufferCopy region{0, 0, count * sizeof(float)};
+			vkCmdCopyBuffer(cmd, aoBuf.buf, readback.buf, 1, &region);
+			endCmd(ctx, cmd);
+		}
+		{
+			void* mapped;
+			vkCheck(vmaMapMemory(ctx.vma, readback.alloc, &mapped), "vmaMapMemory");
+			// Normalize by the number of rays actually traced (sqrtPasses² might differ from requested ray count)
+			const float invTotal = 1.0f / float(totalPasses);
+			for (size_t i = 0; i < count; ++i)
+				ao_values[sampleAt(i)] = static_cast<const float*>(mapped)[i] * invTotal;
+			vmaUnmapMemory(ctx.vma, readback.alloc);
+		}
+
+		destroyBuffer(ctx, readback);
+		destroyBuffer(ctx, aoBuf);
+		destroyBuffer(ctx, sampleFaceNormBuf);
+		destroyBuffer(ctx, sampleNormBuf);
+		destroyBuffer(ctx, samplePosBuf);
+	};
+
+	const size_t numSamples = ao_samples.num_samples;
+	const int sqrtPasses = (int)lroundf(sqrtf((float)rays_per_sample));
+	tracePass(numSamples, sqrtPasses, [](const size_t i) { return i; });
+
+	// Adaptive refinement: samples darker than the threshold are mostly lit by a few rays escaping through
+	// small openings (like car interiors), so their estimate is very noisy. Only those are traced again with
+	// more rays, reusing the same scene, and the new estimate replaces the old one.
+	size_t refined = 0;
+	const int darkSqrtPasses = (int)lroundf(sqrtf((float)std::max(dark_rays_per_sample, 0)));
+	if (dark_threshold > 0.f && darkSqrtPasses > sqrtPasses)
 	{
-		VkCommandBuffer cmd = beginCmd(ctx);
-		VkBufferCopy region{0, 0, numSamples * sizeof(float)};
-		vkCmdCopyBuffer(cmd, aoBuf.buf, readback.buf, 1, &region);
-		endCmd(ctx, cmd);
-	}
-	{
-		void* mapped;
-		vmaMapMemory(ctx.vma, readback.alloc, &mapped);
-		memcpy(ao_values, mapped, numSamples * sizeof(float));
-		vmaUnmapMemory(ctx.vma, readback.alloc);
+		std::vector<size_t> darkSamples;
+		for (size_t i = 0; i < numSamples; ++i)
+		{
+			if (ao_values[i] < dark_threshold) darkSamples.push_back(i);
+		}
+		if (!darkSamples.empty())
+		{
+			tracePass(darkSamples.size(), darkSqrtPasses, [&](const size_t i) { return darkSamples[i]; });
+		}
+		refined = darkSamples.size();
 	}
 
-	// Normalize
-	const float invTotal = 1.0f / float(rays_per_sample);
-	for (size_t i = 0; i < numSamples; ++i)
-		ao_values[i] *= invTotal;
-
-	// ── 11. Cleanup ──
-	destroyBuffer(ctx, readback);
+	// ── 9. Cleanup ──
 	vkDestroyPipeline(ctx.device, pipeline, nullptr);
 	vkDestroyPipelineLayout(ctx.device, pipeLayout, nullptr);
 	vkDestroyDescriptorPool(ctx.device, descPool, nullptr);
 	vkDestroyDescriptorSetLayout(ctx.device, dsLayout, nullptr);
 	vkDestroyShaderModule(ctx.device, shaderModule, nullptr);
 
-	destroyBuffer(ctx, aoBuf);
-	destroyBuffer(ctx, sampleFaceNormBuf);
-	destroyBuffer(ctx, sampleNormBuf);
-	destroyBuffer(ctx, samplePosBuf);
 	destroyBuffer(ctx, texDataBuf);
 	destroyBuffer(ctx, texInfoBuf);
 	destroyBuffer(ctx, matBuf);
@@ -1039,4 +1115,29 @@ void bake::ao_vulkan(const std::vector<Mesh*>& blockers,
 		ctx.pfnDestroyAS(ctx.device, b.as, nullptr);
 		destroyBuffer(ctx, b.buf);
 	}
+	return refined;
+}
+
+size_t bake::ao_vulkan(const std::vector<Mesh*>& blockers,
+	const AOSamples& ao_samples, const int rays_per_sample, const float albedo, const uint32_t bounce_counts,
+	const float scene_offset_scale_horizontal, const float scene_offset_scale_vertical,
+	const float trees_light_pass_chance, const int dark_rays_per_sample, const float dark_threshold,
+	const bool debug_mode, float* ao_values)
+{
+	try
+	{
+		return ao_vulkan_run(blockers, ao_samples, rays_per_sample, albedo, bounce_counts,
+			scene_offset_scale_horizontal, scene_offset_scale_vertical, trees_light_pass_chance,
+			dark_rays_per_sample, dark_threshold, ao_values);
+	}
+	catch (const std::exception& e)
+	{
+		// Most likely device lost (TDR) or out of VRAM. Resources of the failed run are leaked on purpose:
+		// with a lost device there is no safe way to release them. Stick to Embree from now on.
+		std::cerr << "Vulkan baking failed: " << e.what() << ", switching to Embree (CPU)\n";
+		_vulcan_ready_ctx.failed = true;
+	}
+	return ao_embree(blockers, ao_samples, rays_per_sample, albedo, bounce_counts,
+		scene_offset_scale_horizontal, scene_offset_scale_vertical, trees_light_pass_chance,
+		dark_rays_per_sample, dark_threshold, debug_mode, ao_values);
 }

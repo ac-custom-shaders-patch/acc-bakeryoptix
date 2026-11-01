@@ -265,6 +265,7 @@ baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene,
 
 	// Computing AO
 	std::vector<float> ao_values(total_samples);
+	size_t refined_samples;
 	{
 		PERF("\tComputing AO");
 
@@ -308,16 +309,21 @@ baked_data bake_wrap::bake_scene(const std::shared_ptr<bake::Scene>& scene,
 
 		if (bake::vulkan_available())
 		{
-			ao_vulkan(blocker_meshes, ao_samples, config.num_rays, config.scene_albedo, uint32_t(config.bounce_counts),
+			refined_samples = ao_vulkan(blocker_meshes, ao_samples, config.num_rays, config.scene_albedo, uint32_t(config.bounce_counts),
 				config.scene_offset_scale_horizontal, config.scene_offset_scale_vertical, config.trees_light_pass_chance,
-				config.debug_mode, &ao_values[0]);
+				config.dark_num_rays, config.dark_threshold, config.debug_mode, &ao_values[0]);
 		}
 		else
 		{
-			ao_embree(blocker_meshes, ao_samples, config.num_rays, config.scene_albedo, uint32_t(config.bounce_counts),
+			refined_samples = ao_embree(blocker_meshes, ao_samples, config.num_rays, config.scene_albedo, uint32_t(config.bounce_counts),
 				config.scene_offset_scale_horizontal, config.scene_offset_scale_vertical, config.trees_light_pass_chance,
-				config.debug_mode, &ao_values[0]);
+				config.dark_num_rays, config.dark_threshold, config.debug_mode, &ao_values[0]);
 		}
+	}
+	if (verbose && refined_samples > 0)
+	{
+		std::cout << "\tDark samples refined with " << config.dark_num_rays << " rays: " << refined_samples
+			<< " (" << int(100. * double(refined_samples) / double(total_samples) + 0.5) << "%)\n";
 	}
 
 	// Mapping AO to vertices
